@@ -7,3 +7,5 @@ export interface CanvasNode { id: string; projectId: string; kind: NodeKind; x: 
 export interface Edge { id: string; projectId: string; fromNodeId: string; fromPortId: string; toNodeId: string; toPortId: string; kind: PortKind; createdAt: number }
 export interface HealthResponse { ok: true; service: 'canvora-backend'; version: string; timestamp: string }
 export interface ApiError { message: string; detail?: string }
+export type AssetKind = 'image' | 'video' | 'audio';
+export interface Asset { id: string; projectId: string; kind: AssetKind; originalName: string; relPath: string; ext: string; sizeBytes: number; createdAt: number; tags: string[]; favorite: boolean; proxyStatus: 'none' | 'pending' | 'ready' | 'failed' }

@@ -1,11 +1,14 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import type { HealthResponse } from '@canvora/shared';
+import { ensureWorkspace, importAsset } from './workspace.js';
 
 export const buildServer = () => {
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   app.get('/api/health', async (): Promise<HealthResponse> => ({ ok: true, service: 'canvora-backend', version: '0.1.0', timestamp: new Date().toISOString() }));
+  app.get('/api/workspace', async (request, reply) => { const root = String((request.query as { root?: string }).root ?? process.env.CANVORA_WORKSPACE ?? 'F:/Canvora'); return ensureWorkspace(root); });
+  app.post('/api/assets/import', async (request, reply) => { const body = request.body as { root: string; projectId: string; sourcePath: string }; try { return await importAsset(await ensureWorkspace(body.root), body.projectId, body.sourcePath); } catch (error) { return reply.status(400).send({ message: error instanceof Error ? error.message : '素材导入失败', detail: String(error) }); } });
   app.setErrorHandler((error, _request, reply) => reply.status(500).send({ message: '服务器发生错误，请查看日志后重试', detail: error instanceof Error ? error.message : String(error) }));
   return app;
 };
