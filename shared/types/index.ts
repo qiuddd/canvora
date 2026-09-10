@@ -32,9 +32,46 @@ export interface Asset extends AssetMetadata {
   favorite: boolean;
   proxyStatus: 'none' | 'pending' | 'ready' | 'failed';
   hash?: string;
+  /** 素材分组，null 表示未分组。 */
+  groupId?: string | null;
+  /** 产生方式，用于素材库筛选。 */
+  source?: 'imported' | 'exportedFrame' | 'upscaled' | 'interpolated';
 }
 
-export interface WorkspaceState { root: string; projects: Project[]; assets: Asset[] }
+export interface AssetGroup { id: string; projectId: string; name: string; createdAt: number }
+
+/** 一个项目的画布内容（节点和连线）。 */
+export interface CanvasSnapshot { nodes: CanvasNode[]; edges: Edge[] }
+
+export interface WorkspaceState { root: string; projects: Project[]; assets: Asset[]; groups?: AssetGroup[]; canvases?: Record<string, CanvasSnapshot> }
 
 /** 连线尝试的结果，用于界面给出中文提示。 */
 export type ConnectResult = 'ok' | 'self' | 'cycle' | 'duplicate' | 'replaced';
+
+export type JobKind = 'exportFrames' | 'upscaleImage' | 'upscaleVideo' | 'interpolateVideo';
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface Job {
+  id: string;
+  projectId: string;
+  kind: JobKind;
+  status: JobStatus;
+  progress: number;
+  statusText: string;
+  /** 参与的素材（批量任务会有多个）。 */
+  assetIds: string[];
+  resultAssetIds: string[];
+  errorMessage?: string;
+  errorDetail?: string;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+export interface ToolStatus { ffmpeg: boolean; ffprobe: boolean; realesrgan: boolean; rife: boolean }
+
+export type ChatRole = 'system' | 'user' | 'assistant';
+export interface ChatMessage { role: ChatRole; content: string }
+export interface ChatReply { content: string; model: string; usage?: { promptTokens: number; completionTokens: number } }
+
+export interface ProviderSummary { id: string; name: string; protocol: string; baseUrl: string; hasKey: boolean; models: string[]; createdAt: number }

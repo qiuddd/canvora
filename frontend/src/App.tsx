@@ -1,37 +1,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, PointerEvent as ReactPointerEvent, WheelEvent } from 'react';
-import type { Asset, NodeKind, PortKind, WorkspaceState } from '@canvora/shared';
-import { assetFileUrl, assetThumbUrl, getWorkspace, uploadAsset } from './api/client';
+import type { Asset, Job, NodeKind, PortKind, Project, ToolStatus, WorkspaceState } from '@canvora/shared';
+import {
+  assignGroup, createGroup, createProject, deleteAsset, deleteProject,
+  enqueueJob, getCanvas, getTools, getWorkspace, listJobs, removeGroup, renameProject, saveCanvas, uploadAsset,
+} from './api/client';
+import { AssetLibrary, type BatchKind } from './components/AssetLibrary';
+import { CanvasContextMenu } from './components/CanvasContextMenu';
+import { ChatPanel } from './components/ChatPanel';
+import { JobsPanel } from './components/JobsPanel';
+import { ProjectGate } from './components/ProjectGate';
 import { CanvasNodeView } from './canvas/CanvasNodeView';
 import { KIND_LABELS, PORT_COLORS, findInput, nodeSpec, portCenterY, portsCompatible } from './canvas/ports';
 import { useCanvasStore } from './stores/canvas-store';
 
-type PanelTab = '素材库' | '任务中心' | '设置';
-
-const TOOLS: Array<[string, string, NodeKind]> = [
-  ['提示词', 'T', 'prompt'], ['文本', '≡', 'text'], ['图片', '▣', 'image'], ['视频', '▶', 'video'],
-  ['生图', '✦', 'generateImage'], ['生视频', '◈', 'generateVideo'], ['抽帧', '⧉', 'extractFrame'],
-  ['放大', '⤢', 'upscale'], ['补帧', '⧗', 'interpolate'], ['AI 文本', '✎', 'llm'], ['便利贴', '▤', 'note'],
-];
-
+type PanelTab = '对话' | '素材' | '任务';
 const IMAGE_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'];
 const VIDEO_TYPES = ['mp4', 'mov', 'mkv', 'webm', 'avi'];
 const AUDIO_TYPES = ['mp3', 'wav', 'aac', 'm4a'];
 const ACCEPT = [...IMAGE_TYPES, ...VIDEO_TYPES, ...AUDIO_TYPES].map((ext) => `.${ext}`).join(',');
-
 const clampZoom = (value: number) => Math.min(4, Math.max(0.1, value));
+
+const batchKindOf = (kind: BatchKind): 'exportFrames' | 'upscaleImage' | 'interpolateVideo' => kind === 'frames' ? 'exportFrames' : kind === 'upscale' ? 'upscaleImage' : 'interpolateVideo';
 
 export function App() {
   const [dark, setDark] = useState(false);
-  const [tab, setTab] = useState<PanelTab>('素材库');
-  const [timelineExpanded, setTimelineExpanded] = useState(false);
+  const [tab, setTab] = useState<PanelTab>('对话');
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [tools, setTools] = useState<ToolStatus | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [fatal, setFatal] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState('');
-  const [fatal, setFatal] = useState('');
-  const [rootInput, setRootInput] = useState('');
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
+  const [menu, setMenu] = useState<{ x: number; y: number; canvasX: number; canvasY: number } | null>(null);
   const [connecting, setConnecting] = useState<{ nodeId: string; portId: string; kind: PortKind; index: number } | null>(null);
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
@@ -51,23 +55,127 @@ export function App() {
   const duplicateNode = useCanvasStore((state) => state.duplicateNode);
   const connect = useCanvasStore((state) => state.connect);
   const deleteEdge = useCanvasStore((state) => state.deleteEdge);
+  const replaceAll = useCanvasStore((state) => state.replaceAll);
 
-  const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
-  const assetMap = useMemo(() => new Map((workspace?.assets ?? []).map((asset) => [asset.id, asset])), [workspace]);
   const root = workspace?.root ?? '';
+  const activeProject: Project | null = useMemo(() => workspace?.projects.find((item) => item.id === activeProjectId) ?? null, [workspace, activeProjectId]);
+  const projectAssets = useMemo(() => (workspace?.assets ?? []).filter((asset) => asset.projectId === activeProjectId), [workspace, activeProjectId]);
+  const projectGroups = useMemo(() => (workspace?.groups ?? []).filter((group) => group.projectId === activeProjectId), [workspace, activeProjectId]);
+  const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const assetMap = useMemo(() => new Map(projectAssets.map((asset) => [asset.id, asset])), [projectAssets]);
+  const selectedPromptText = useMemo(() => {
+    const node = nodes.find((item) => item.id === selectedNodeId);
+    return node && (node.kind === 'prompt' || node.kind === 'text') ? String(node.data.text ?? '') : '';
+  }, [nodes, selectedNodeId]);
 
-  const loadWorkspace = useCallback(async (targetRoot?: string) => {
+  const reloadWorkspace = useCallback(async (targetRoot?: string) => {
     try {
       const state = await getWorkspace(targetRoot);
       setWorkspace(state);
-      setRootInput(state.root);
       setFatal('');
+      return state;
     } catch (error) {
       setFatal(error instanceof Error ? error.message : '无法读取工作区');
+      return null;
     }
   }, []);
 
-  useEffect(() => { void loadWorkspace(); }, [loadWorkspace]);
+  const refreshJobs = useCallback(() => { void listJobs(root || undefined).then(setJobs).catch(() => undefined); }, [root]);
+
+  /** 启动时用它恢复上次打开的项目。定义必须在用到它的 effect 之前，否则会踩暂时性死区。 */
+  const openProjectWith = useCallback(async (state: WorkspaceState, projectId: string) => {
+    try {
+      const snapshot = await getCanvas(projectId, state.root);
+      replaceAll(snapshot);
+      setActiveProjectId(projectId);
+    } catch {
+      // 恢复失败就停在项目列表，不影响使用
+    }
+  }, [replaceAll]);
+
+  useEffect(() => {
+    void reloadWorkspace().then((state) => {
+      if (!state) return;
+      void getTools(state.root).then(setTools).catch(() => setTools(null));
+      const last = window.localStorage.getItem('canvora:lastProject');
+      if (last && state.projects.some((project) => project.id === last)) void openProjectWith(state, last);
+    });
+  }, [reloadWorkspace, openProjectWith]);
+
+  useEffect(() => { if (activeProjectId) refreshJobs(); }, [activeProjectId, refreshJobs]);
+  // 任务在跑的时候自动轮询，让进度自己更新
+  useEffect(() => {
+    if (!jobs.some((job) => job.status === 'queued' || job.status === 'running')) return;
+    const timer = setInterval(() => {
+      void listJobs(root || undefined).then((next) => {
+        setJobs(next);
+        // 任务产出新素材后刷新素材库
+        if (next.some((job) => job.status === 'succeeded' && job.resultAssetIds.length)) {
+          void getWorkspace(root || undefined).then(setWorkspace).catch(() => undefined);
+        }
+      }).catch(() => undefined);
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [jobs, root]);
+
+  // ── 画布持久化：改动后延迟保存，避免每个像素都写盘 ──
+  const saveTimer = useRef<number | null>(null);
+  useEffect(() => {
+    if (!activeProjectId || !root) return;
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      void saveCanvas(activeProjectId, { nodes, edges }, root).catch(() => undefined);
+    }, 700);
+    return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current); };
+  }, [nodes, edges, activeProjectId, root]);
+
+  const openProject = useCallback(async (projectId: string) => {
+    setBusy('正在打开项目…');
+    try {
+      const snapshot = await getCanvas(projectId, root || undefined);
+      replaceAll(snapshot);
+      setActiveProjectId(projectId);
+      // 记住上次打开的项目，刷新后直接回到这里，不用每次重新点
+      window.localStorage.setItem('canvora:lastProject', projectId);
+      setPan({ x: 0, y: 0 });
+      setZoom(1);
+      setNotice('');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '打开项目失败');
+    } finally {
+      setBusy('');
+    }
+  }, [replaceAll, root]);
+
+  const handleCreateProject = async (name: string) => {
+    setBusy('正在创建项目…');
+    try {
+      const project = await createProject(name, root || undefined);
+      const state = await reloadWorkspace(root || undefined);
+      if (!state) return;
+      replaceAll({ nodes: [], edges: [] });
+      setActiveProjectId(project.id);
+      setNotice(`项目「${project.name}」已创建，右键画布添加节点`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '创建项目失败');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    const project = workspace?.projects.find((item) => item.id === projectId);
+    if (!project) return;
+    const count = (workspace?.assets ?? []).filter((asset) => asset.projectId === projectId).length;
+    if (!window.confirm(`删除项目「${project.name}」？\n项目里的 ${count} 个素材文件也会一起删除，无法恢复。`)) return;
+    try {
+      await deleteProject(projectId, root || undefined);
+      if (activeProjectId === projectId) { setActiveProjectId(null); replaceAll({ nodes: [], edges: [] }); }
+      await reloadWorkspace(root || undefined);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '删除项目失败');
+    }
+  };
 
   const toCanvas = useCallback((clientX: number, clientY: number) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -75,28 +183,30 @@ export function App() {
     return { x: (clientX - rect.left - pan.x) / zoom, y: (clientY - rect.top - pan.y) / zoom };
   }, [pan.x, pan.y, zoom]);
 
+  const addAssetToCanvas = useCallback((asset: Asset, position?: { x: number; y: number }) => {
+    if (!activeProjectId) { setNotice('请先新建或打开一个项目'); return; }
+    const kind: NodeKind = asset.kind === 'audio' ? 'audio' : asset.kind;
+    addNode(kind, position, { assetId: asset.id });
+  }, [activeProjectId, addNode]);
+
   const importFiles = useCallback(async (files: File[], dropPoint?: { x: number; y: number }) => {
-    if (!workspace) { setNotice('工作区还没准备好，请稍后重试'); return; }
-    const projectId = workspace.projects[0]?.id ?? 'default';
+    if (!activeProjectId) { setNotice('请先新建项目，再拖素材进来'); return; }
     let index = 0;
     for (const file of files) {
       try {
         setBusy(`正在导入 ${file.name}…`);
-        const asset = await uploadAsset(workspace.root, projectId, file, (percent) => setBusy(`正在导入 ${file.name}（${percent}%）`));
+        const asset = await uploadAsset(root, activeProjectId, file, (percent) => setBusy(`正在导入 ${file.name}（${percent}%）`));
         setWorkspace((state) => state ? { ...state, assets: [...state.assets.filter((item) => item.id !== asset.id), asset] } : state);
         const kind: NodeKind = asset.kind === 'audio' ? 'audio' : asset.kind;
-        const position = dropPoint
-          ? { x: dropPoint.x + index * 28, y: dropPoint.y + index * 28 }
-          : undefined;
-        addNode(kind, position, { assetId: asset.id });
-        setNotice(`已导入：${asset.originalName}`);
+        addNode(kind, dropPoint ? { x: dropPoint.x + index * 28, y: dropPoint.y + index * 28 } : undefined, { assetId: asset.id });
+        setNotice(`已导入「${asset.originalName}」，右键画布可以继续加节点`);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : '素材导入失败');
       }
       index += 1;
     }
     setBusy('');
-  }, [addNode, nodes.length, workspace]);
+  }, [activeProjectId, addNode, root]);
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -104,27 +214,20 @@ export function App() {
     const assetId = event.dataTransfer.getData('application/x-canvora-asset');
     if (assetId) {
       const asset = assetMap.get(assetId);
-      if (asset) {
-        addNode(asset.kind === 'audio' ? 'audio' : asset.kind, point, { assetId });
-        setNotice(`已把「${asset.originalName}」放到画布`);
-      }
+      if (asset) { addAssetToCanvas(asset, point); setNotice(`已把「${asset.originalName}」放到画布`); }
       return;
     }
     if (event.dataTransfer.files.length) void importFiles(Array.from(event.dataTransfer.files), point);
   };
 
-  // 连线手势：监听在组件挂载时注册一次，靠 ref 读取最新状态。
-  // 如果放在 useEffect([connecting]) 里注册，快速拖拽时 pointerup 可能早于 React 提交而丢失。
+  // 连线手势：监听在组件挂载时注册一次，靠 ref 读取最新状态，避免快速拖拽丢事件。
   const gestureRef = useRef<{ nodeId: string; portId: string; kind: PortKind; index: number } | null>(null);
   const toCanvasRef = useRef(toCanvas);
   toCanvasRef.current = toCanvas;
   const completeConnectRef = useRef<(gesture: NonNullable<typeof gestureRef.current>, clientX: number, clientY: number) => void>(() => undefined);
 
   useEffect(() => {
-    const onMove = (event: PointerEvent) => {
-      if (!gestureRef.current) return;
-      setCursor(toCanvasRef.current(event.clientX, event.clientY));
-    };
+    const onMove = (event: PointerEvent) => { if (gestureRef.current) setCursor(toCanvasRef.current(event.clientX, event.clientY)); };
     const onUp = (event: PointerEvent) => {
       const gesture = gestureRef.current;
       if (!gesture) return;
@@ -170,7 +273,7 @@ export function App() {
       if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return;
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeId) deleteNode(selectedNodeId);
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && selectedNodeId) { event.preventDefault(); duplicateNode(selectedNodeId); }
-      if (event.key === 'Escape') setConnecting(null);
+      if (event.key === 'Escape') { setConnecting(null); setMenu(null); }
       if ((event.ctrlKey || event.metaKey) && event.key === '0') { event.preventDefault(); setZoom(1); }
     };
     window.addEventListener('keydown', onKey);
@@ -213,6 +316,23 @@ export function App() {
     setPan({ x: 40 - minX * nextZoom, y: 40 - minY * nextZoom });
   };
 
+  const runBatch = async (kind: BatchKind, assetIds: string[]) => {
+    if (!activeProjectId) { setNotice('请先打开一个项目'); return; }
+    if (!assetIds.length) { setNotice('请先在素材库里勾选要处理的素材'); return; }
+    try {
+      // 「导出首尾帧」按后端约定拆成首帧和尾帧两个任务，这样每个素材都能拿到两张图。
+      const requests = kind === 'frames'
+        ? [{ kind: 'exportFrames' as const, options: { position: 'first' } }, { kind: 'exportFrames' as const, options: { position: 'last' } }]
+        : [{ kind: batchKindOf(kind), options: {} }];
+      for (const request of requests) await enqueueJob(request.kind, assetIds, activeProjectId, request.options, root || undefined);
+      setNotice(kind === 'frames' ? '已提交导出首尾帧任务' : '已提交任务，排队执行中');
+      setTab('任务');
+      refreshJobs();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '提交任务失败');
+    }
+  };
+
   const connectingFrom = connecting ? nodeMap.get(connecting.nodeId) : null;
   const previewPath = connectingFrom && connecting
     ? `M ${connectingFrom.x + connectingFrom.width} ${connectingFrom.y + portCenterY(connecting.index)} C ${connectingFrom.x + connectingFrom.width + 80} ${connectingFrom.y + portCenterY(connecting.index)}, ${cursor.x - 80} ${cursor.y}, ${cursor.x} ${cursor.y}`
@@ -224,32 +344,46 @@ export function App() {
         <h2>无法连接后端</h2>
         <p>{fatal}</p>
         <p className="muted">请确认后端窗口还在运行（默认 http://127.0.0.1:8787），然后重试。</p>
-        <button className="primary-button" onClick={() => void loadWorkspace()}>重试</button>
+        <button className="primary-button" onClick={() => void reloadWorkspace()}>重试</button>
       </div>
     </div>;
+  }
+
+  if (workspace && !activeProject) {
+    return <>
+      <ProjectGate
+        projects={workspace.projects}
+        workspaceRoot={workspace.root}
+        busy={Boolean(busy)}
+        onCreate={handleCreateProject}
+        onOpen={(id) => void openProject(id)}
+        onDelete={handleDeleteProject}
+        onRename={(id, name) => { void renameProject(id, name, root || undefined).then(() => reloadWorkspace(root || undefined)); }}
+        onChangeRoot={(nextRoot) => { void reloadWorkspace(nextRoot); }}
+      />
+      {busy && <div className="gate-busy">{busy}</div>}
+    </>;
   }
 
   return <div className={dark ? 'app dark' : 'app'}>
     <header className="topbar">
       <div className="brand"><span className="brand-mark">C</span><span>Canvora</span></div>
-      <div className="project-name">{workspace?.projects[0]?.name ?? '未命名项目'} <span className="chevron">⌄</span></div>
+      <div className="project-switch">
+        <button className="link-button" onClick={() => { setActiveProjectId(null); replaceAll({ nodes: [], edges: [] }); }} title="回到项目列表">← 项目</button>
+        <strong>{activeProject?.name ?? '未命名项目'}</strong>
+        <span className="muted">（{projectAssets.length} 个素材）</span>
+      </div>
       <div className="top-actions">
         <button className="ghost-button" onClick={() => fileInput.current?.click()}>导入素材</button>
-        <button className="ghost-button" onClick={() => void loadWorkspace(root)}>刷新</button>
+        <button className="ghost-button" onClick={() => void reloadWorkspace(root)}>刷新</button>
         <button className="icon-button" onClick={() => setDark((value) => !value)}>{dark ? '☀' : '☾'}</button>
       </div>
     </header>
     <main className="workspace">
-      <aside className="toolbar">
-        <div className="toolbar-title">添加节点</div>
-        {TOOLS.map(([label, icon, kind]) => <button key={label} className="tool-button" onClick={() => addNode(kind)}><span className="tool-icon">{icon}</span><span>{label}</span></button>)}
-        <div className="toolbar-spacer" />
-        <button className="tool-button" onClick={() => setTab('设置')}><span className="tool-icon">⚙</span><span>设置</span></button>
-      </aside>
       <section className="canvas-shell">
         <div className="canvas-toolbar">
           <span className="canvas-title">画布</span>
-          <span className="canvas-hint">空白处拖动平移 · 滚轮缩放 · 标题栏拖动节点 · 输出口拖到输入口连线 · 双击连线删除</span>
+          <span className="canvas-hint">右键空白处添加节点 · 拖素材进来导入 · 标题栏拖动节点 · 输出口拖到输入口连线 · 双击连线删除</span>
           <button className="zoom-button" onClick={() => setZoom((value) => clampZoom(value + 0.1))}>＋</button>
           <span className="zoom-label">{Math.round(zoom * 100)}%</span>
           <button className="zoom-button" onClick={() => setZoom((value) => clampZoom(value - 0.1))}>－</button>
@@ -265,6 +399,11 @@ export function App() {
           onPointerMove={onCanvasPointerMove}
           onPointerUp={() => { panStart.current = null; }}
           onWheel={onWheel}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            const point = toCanvas(event.clientX, event.clientY);
+            setMenu({ x: event.clientX, y: event.clientY, canvasX: point.x, canvasY: point.y });
+          }}
         >
           <div className="grid" style={{ backgroundPosition: `${pan.x}px ${pan.y}px`, backgroundSize: `${24 * zoom}px ${24 * zoom}px` }} />
           <div className="canvas-content" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
@@ -293,28 +432,27 @@ export function App() {
               })}
             </svg>
             {previewPath && <svg className="edges-layer preview"><path d={previewPath} style={{ stroke: PORT_COLORS[connecting?.kind ?? 'any'] }} /></svg>}
-            {nodes.length === 0
-              ? <div className="empty-canvas">
-                <div className="empty-icon">✦</div>
-                <h2>开始你的创作</h2>
-                <p>把桌面上的图片、视频拖到这里，或点击左上角「导入素材」</p>
-                <button className="primary-button" onClick={() => fileInput.current?.click()}>导入素材</button>
-              </div>
-              : <div className="node-layer">
-                {nodes.map((node) => <CanvasNodeView
-                  key={node.id}
-                  node={node}
-                  zoom={zoom}
-                  root={root}
-                  assets={assetMap}
-                  selected={selectedNodeId === node.id}
-                  connectingKind={connecting?.kind ?? null}
-                  onSelect={selectNode}
-                  onMove={moveNode}
-                  onUpdateData={updateNodeData}
-                  onStartConnect={(nodeId, portId, kind, index) => { const gesture = { nodeId, portId, kind, index }; gestureRef.current = gesture; setConnecting(gesture); }}
-                />)}
-              </div>}
+            {nodes.length === 0 && <div className="empty-canvas">
+              <div className="empty-icon">✦</div>
+              <h2>{activeProject?.name ?? '新画布'}是空的</h2>
+              <p>在画布上点<b>右键</b>添加节点，或把桌面上的图片、视频直接拖进来</p>
+              <p className="muted tiny">画布可以无限拖拽和缩放，随手试试滚轮</p>
+            </div>}
+            <div className="node-layer">
+              {nodes.map((node) => <CanvasNodeView
+                key={node.id}
+                node={node}
+                zoom={zoom}
+                root={root}
+                assets={assetMap}
+                selected={selectedNodeId === node.id}
+                connectingKind={connecting?.kind ?? null}
+                onSelect={selectNode}
+                onMove={moveNode}
+                onUpdateData={updateNodeData}
+                onStartConnect={(nodeId, portId, kind, index) => { const gesture = { nodeId, portId, kind, index }; gestureRef.current = gesture; setConnecting(gesture); }}
+              />)}
+            </div>
           </div>
           {connecting && <div className="connection-hint">正在从「{KIND_LABELS[connecting.kind]}」输出口拉线，拖到目标节点左侧高亮的输入口上松开</div>}
           {busy && <div className="connection-hint busy">{busy}</div>}
@@ -323,61 +461,41 @@ export function App() {
       </section>
       <aside className="right-panel">
         <div className="panel-tabs">
-          {(['素材库', '任务中心', '设置'] as PanelTab[]).map((item) => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>)}
+          {(['对话', '素材', '任务'] as PanelTab[]).map((item) => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}{item === '任务' && jobs.some((job) => job.status === 'running' || job.status === 'queued') ? ' ·' : ''}</button>)}
         </div>
         <div className="panel-content">
-          {tab === '素材库' && <>
-            <div className="panel-heading">
-              <span>当前项目（{workspace?.assets.length ?? 0}）</span>
-              <button className="small-button" onClick={() => fileInput.current?.click()}>导入</button>
-            </div>
-            {workspace?.assets.length
-              ? <div className="asset-grid">
-                {workspace.assets.map((asset: Asset) => <div
-                  className="asset-card"
-                  key={asset.id}
-                  draggable
-                  onDragStart={(event) => event.dataTransfer.setData('application/x-canvora-asset', asset.id)}
-                  onDoubleClick={() => addNode(asset.kind === 'audio' ? 'audio' : asset.kind, undefined, { assetId: asset.id })}
-                  title={`${asset.originalName}（拖到画布或双击创建节点）`}
-                >
-                  <img src={asset.kind === 'video' ? assetThumbUrl(root, asset.id) : assetFileUrl(root, asset.id)} alt={asset.originalName} />
-                  <span className="asset-name">{asset.originalName}</span>
-                  <span className="asset-meta">{KIND_LABELS[asset.kind]}{asset.kind !== 'image' && asset.durationSec ? ` · ${asset.durationSec.toFixed(1)}秒` : ''}{asset.width ? ` · ${asset.width}×${asset.height}` : ''}</span>
-                </div>)}
-              </div>
-              : <div className="library-empty"><div className="library-icon">▧</div><p>还没有素材</p><span>把图片或视频拖进画布，或点上面的「导入」</span></div>}
-          </>}
-          {tab === '任务中心' && <div className="panel-section">
-            <h3>生成任务</h3>
-            <p className="muted">云端生图 / 生视频、本地放大与补帧任务会显示在这里。</p>
-            <p className="muted">当前版本还没有接入真实 AI 接口，需要你先在「设置」里配置服务商和密钥。</p>
-          </div>}
-          {tab === '设置' && <div className="panel-section">
-            <h3>工作区</h3>
-            <label>工作区路径
-              <input value={rootInput} onChange={(event) => setRootInput(event.target.value)} placeholder="F:/Canvora" />
-            </label>
-            <button className="primary-button" onClick={() => void loadWorkspace(rootInput)}>切换工作区</button>
-            <p className="muted">素材会复制到这个目录下，请选择空间充足的磁盘（推荐 F: 或 G:）。</p>
-            <h3>外观</h3>
-            <button className="ghost-button" onClick={() => setDark((value) => !value)}>切换{dark ? '浅色' : '深色'}主题</button>
-          </div>}
+          {tab === '对话' && <ChatPanel
+            root={root}
+            promptDraft={selectedPromptText}
+            onInsertToCanvas={(text) => { if (selectedNodeId) { updateNodeData(selectedNodeId, { text }); setNotice('已填入选中的提示词节点'); } else { const id = addNode('prompt'); updateNodeData(id, { text }); setNotice('已新建提示词节点并填入内容'); } }}
+          />}
+          {tab === '素材' && <AssetLibrary
+            assets={projectAssets}
+            groups={projectGroups}
+            root={root}
+            tools={tools}
+            onImport={() => fileInput.current?.click()}
+            onAddToCanvas={(asset) => addAssetToCanvas(asset)}
+            onDelete={(asset) => {
+              if (!window.confirm(`删除素材「${asset.originalName}」？工作区里的文件也会删掉。`)) return;
+              void deleteAsset(asset.id, root || undefined).then(() => reloadWorkspace(root || undefined)).catch((error) => setNotice(error instanceof Error ? error.message : '删除失败'));
+            }}
+            onCreateGroup={(name, assetIds) => { void createGroup(activeProjectId ?? '', name, assetIds, root || undefined).then(() => reloadWorkspace(root || undefined)).catch((error) => setNotice(error instanceof Error ? error.message : '分组失败')); }}
+            onAssignGroup={(groupId, assetIds) => { void assignGroup(groupId, assetIds, root || undefined).then(() => reloadWorkspace(root || undefined)).catch((error) => setNotice(error instanceof Error ? error.message : '移出分组失败')); }}
+            onRemoveGroup={(groupId) => { void removeGroup(groupId, root || undefined).then(() => reloadWorkspace(root || undefined)).catch((error) => setNotice(error instanceof Error ? error.message : '删除分组失败')); }}
+            onBatch={(kind, assetIds) => void runBatch(kind, assetIds)}
+          />}
+          {tab === '任务' && <JobsPanel jobs={jobs} root={root} onRefresh={refreshJobs} />}
         </div>
       </aside>
     </main>
-    <footer className={`timeline ${timelineExpanded ? 'expanded' : ''}`}>
-      <div className="timeline-header">
-        <span>时间轴</span>
-        <span className="muted">序列 · 视频轨道（时间轴编辑还在开发中）</span>
-        <button className="small-button" onClick={() => setTimelineExpanded((value) => !value)}>{timelineExpanded ? '收起' : '展开'}</button>
-      </div>
-      <div className="timeline-body">
-        <div className="ruler"><span>00:00</span><span>00:05</span><span>00:10</span><span>00:15</span></div>
-        <div className="track-row"><div className="track-label">视频轨 1</div><div className="track-line"><div className="drop-label">把画布上的视频拖到这里</div></div></div>
-        <div className="track-row"><div className="track-label">贴图轨 1</div><div className="track-line secondary" /></div>
-      </div>
+    <footer className="statusbar">
+      <span>工作区：{root || '未设置'}</span>
+      <span>工具：{tools ? `ffmpeg ${tools.ffmpeg ? '✓' : '×'} · ffprobe ${tools.ffprobe ? '✓' : '×'} · Real-ESRGAN ${tools.realesrgan ? '✓' : '×'} · RIFE ${tools.rife ? '✓' : '×'}` : '检测中…'}</span>
+      <span>节点 {nodes.length} · 连线 {edges.length}</span>
+      <span className="muted">时间轴剪辑还在开发中</span>
     </footer>
+    {menu && <CanvasContextMenu x={menu.x} y={menu.y} onPick={(kind) => addNode(kind, { x: menu.canvasX, y: menu.canvasY })} onClose={() => setMenu(null)} />}
     <input ref={fileInput} hidden type="file" multiple accept={ACCEPT} onChange={(event) => { if (event.target.files?.length) void importFiles(Array.from(event.target.files)); event.target.value = ''; }} />
   </div>;
 }

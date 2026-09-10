@@ -1,10 +1,9 @@
 import { create } from 'zustand';
-import type { CanvasNode, ConnectResult, Edge, NodeKind, PortKind } from '@canvora/shared';
+import type { CanvasNode, CanvasSnapshot, ConnectResult, Edge, NodeKind, PortKind } from '@canvora/shared';
 
 interface CanvasState {
   nodes: CanvasNode[];
   edges: Edge[];
-  viewport: { x: number; y: number; zoom: number };
   selectedNodeId: string | null;
   addNode: (kind: NodeKind, position?: { x: number; y: number }, data?: Record<string, unknown>) => string;
   moveNode: (id: string, x: number, y: number) => void;
@@ -14,6 +13,8 @@ interface CanvasState {
   duplicateNode: (id: string) => string | null;
   connect: (fromNodeId: string, fromPortId: string, toNodeId: string, toPortId: string, kind: PortKind, multiple: boolean) => ConnectResult;
   deleteEdge: (id: string) => void;
+  replaceAll: (snapshot: CanvasSnapshot) => void;
+  snapshot: () => CanvasSnapshot;
 }
 
 const TITLES: Record<NodeKind, string> = { prompt: '提示词', text: '文本', image: '图片素材', video: '视频素材', audio: '音频素材', generateImage: '生图', generateVideo: '生视频', llm: 'AI 文本', upscale: '图片放大', interpolate: '视频补帧', extractFrame: '抽帧', note: '便利贴' };
@@ -29,7 +30,6 @@ function reaches(edges: Edge[], from: string, target: string, seen = new Set<str
 export const useCanvasStore = create<CanvasState>((set, get) => ({
   nodes: [],
   edges: [],
-  viewport: { x: 0, y: 0, zoom: 1 },
   selectedNodeId: null,
 
   addNode: (kind, position, data) => {
@@ -87,4 +87,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   deleteEdge: (id) => set((state) => ({ edges: state.edges.filter((edge) => edge.id !== id) })),
+
+  replaceAll: (snapshot) => set({ nodes: snapshot.nodes ?? [], edges: snapshot.edges ?? [], selectedNodeId: null }),
+
+  snapshot: () => ({ nodes: get().nodes, edges: get().edges }),
 }));

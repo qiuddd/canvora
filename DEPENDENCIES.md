@@ -44,9 +44,11 @@
 | 工具 | 来源 | 许可证 | 用途 | 状态 |
 |---|---|---|---|---|
 | `ffmpeg` / `ffprobe` | 用户已装（gyan.dev essentials 7.1） | LGPL/GPL（取决于构建） | 所有媒体处理 | ✅ 已装 |
-| `realesrgan-ncnn-vulkan` | Real-ESRGAN 官方 release `v0.2.5.0`，资产 `realesrgan-ncnn-vulkan-20220424-windows.zip` | **BSD-3-Clause** | 图片/视频逐帧放大 | 待下载 |
-| `rife-ncnn-vulkan` | nihui/rife-ncnn-vulkan release（20221029 或更新） | **MIT** | 补帧 | 待下载 |
+| `realesrgan-ncnn-vulkan` | Real-ESRGAN 官方 release `v0.2.5.0`，资产 `realesrgan-ncnn-vulkan-20220424-windows.zip`：`https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip` | **BSD-3-Clause** | 图片/视频逐帧放大 | 下载脚本已就绪（`scripts/fetch-tools.mjs`）。**本机实测下载失败（ECONNRESET），需要手动下载 zip 后用 `--from-file=` 安装** |
+| `rife-ncnn-vulkan` | nihui/rife-ncnn-vulkan release `20221029`，资产 `rife-ncnn-vulkan-20221029-windows.zip`（内含 `rife-v4.6` 等 11 个模型目录）：`https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-windows.zip` | **MIT** | 补帧 | 同上 |
 | `realcugan-ncnn-vulkan` | nihui/realcugan-ncnn-vulkan release | **MIT** | 动画向放大（可选，先实测效果再决定是否加入） | 暂缓 |
+
+**解压方式（2026-09-11 记录）**：`scripts/fetch-tools.mjs` **没有引入任何 npm 依赖**。zip 解压用 Windows 自带的 PowerShell `Expand-Archive`（脚本通过 `-EncodedCommand` 传入，路径含空格或中文也不会被拆分，不经过 shell 解析），失败时退回系统自带的 `C:/Windows/System32/tar.exe`（bsdtar，能读 zip）。两者都是操作系统自带组件，不涉及第三方许可证，因此无需登记新的依赖行。
 
 ---
 

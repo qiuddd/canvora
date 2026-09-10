@@ -21,6 +21,16 @@
 
 ---
 
+### 1.1 界面约定（2026-09-11 按产品所有者要求调整）
+
+- **节点通过画布右键菜单添加**，侧边栏不再放节点按钮。
+- **进入程序先看到项目入口页**（新建项目 / 选择已有项目），选定项目后进入空画布。
+- **素材按项目隔离**：`projects/<项目ID>/assets/` 下只放该项目的素材，素材库只显示当前项目的素材。
+- **拖文件到画布即导入**：浏览器把文件字节流式上传到后端，后端复制进项目目录并登记素材。
+- **右侧固定一个 AI 对话窗口**，默认接 DeepSeek；密钥只在后端使用，前端永远不持有。
+
+---
+
 ## 2. 技术栈（已定，不要换）
 
 | 层 | 选型 |
@@ -193,18 +203,20 @@ Canvora/
 ├── frontend/             Vite + React 19 + TS
 │   └── src/
 │       ├── api/          ⚠️ 唯一的前后端边界，不许在别处 fetch
-│       ├── canvas/       无限画布
-│       ├── timeline/     时间轴与剪辑（Konva）
-│       ├── panels/       素材库/任务中心/provider 配置
+│       ├── canvas/       无限画布：ports.ts（端口模型）、CanvasNodeView.tsx、node-catalog.ts（右键菜单清单）
+│       ├── components/   ProjectGate（项目入口）、AssetLibrary（素材库+批量处理）、ChatPanel（AI 对话）、JobsPanel（任务中心）、CanvasContextMenu
+│       ├── panels/       后续面板放这里
 │       └── stores/       zustand（画布与时间轴分开）
 ├── backend/              Node 22 + Fastify + TS
 │   └── src/
-│       ├── routes/       HTTP 接口
-│       ├── db/           SQLite 与迁移
-│       ├── media/        ffmpeg/probe 封装
+│       ├── routes/       后续拆分路由时放这里（目前集中在 server.ts）
+│       ├── db/           后续换 SQLite 时放这里（目前用 canvora-state.json）
+│       ├── media/        ffmpeg/probe 封装（media.ts 参数构造、process.ts 子进程）
 │       ├── filtergraph/  ⚠️ 滤镜图编译器（最需要测试）
-│       ├── localai/      本地 AI 任务串行队列
+│       ├── localai/      ⚠️ 本地 AI 串行队列（jobs.ts）
 │       ├── providers/    ⚠️ AI 服务商适配器，一家一个文件
+│       ├── chat.ts       DeepSeek 对话（密钥只在服务端读取）
+│       ├── jobs.ts       本地批量任务（放大/补帧/抽帧），全局串行
 │       ├── tasks/        任务队列与轮询调度器
 │       └── secrets/      密钥加密与脱敏
 ├── shared/               前后端共用类型与常量
