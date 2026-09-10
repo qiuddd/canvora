@@ -1,6 +1,8 @@
 # Canvora 依赖与许可证登记
 
 > **规则**：每新增一个第三方依赖，都要**打开它的 LICENSE 文件实际阅读**（不要相信 README 里写的 "open source"），然后登记到本表。
+>
+> 阶段 0 已安装依赖版本以根目录 `package-lock.json` 为准；本阶段未引入黑名单依赖。
 > 只允许 MIT / Apache-2.0 / BSD 系列。GitHub 侧栏显示 `NOASSERTION` / `Other` / 没有许可证的，必须人肉读 LICENSE 文件，读不懂就在交付说明里标出来问用户。
 >
 > 更新日期：2026-09-11

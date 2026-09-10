@@ -1,0 +1,23 @@
+{
+  "name": "canvora",
+  "version": "0.1.0",
+  "description": "**一个跑在你自己的 Windows 电脑上的无限画布 + AI 创作 + 视频剪辑工作台。**",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm run test --workspaces",
+    "dev": "concurrently -k \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "npm --workspace backend run dev",
+    "dev:frontend": "npm --workspace frontend run dev",
+    "typecheck": "npm run typecheck --workspaces",
+    "build": "npm run build --workspace frontend"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "private": "true",
+  "workspaces": [
+    "frontend",
+    "backend",
+    "shared"
+  ]
+}
