@@ -1,0 +1,6 @@
+export type ProtocolType = 'openai-compatible' | 'openai-images' | 'ark-video' | 'dashscope-video' | 'zhipu-video' | 'minimax-video' | 'gemini' | 'custom-script';
+export type ModelCapability = 'text' | 'text2image' | 'image2image' | 'text2video' | 'image2video' | 'firstLastFrame' | 'imageEdit';
+export interface ProviderModel { id: string; displayName: string; capabilities: ModelCapability[]; paramHints?: Record<string, unknown> }
+export interface Provider { id: string; name: string; protocol: ProtocolType; baseUrl: string; apiKeyRef: string; enabled: boolean; models: ProviderModel[]; isPreset: boolean; createdAt: number; lastTestedAt?: number; lastTestStatus?: 'success' | 'failed' }
+export type TaskKind = 'image' | 'video' | 'text' | 'upscale' | 'interpolate' | 'extractFrame' | 'export' | 'proxy';
+export interface GenerationTask { id: string; projectId: string; nodeId?: string; kind: TaskKind; engine: 'cloud' | 'local'; providerId?: string; modelId?: string; params: Record<string, unknown>; remoteTaskId?: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; progress: number; statusText: string; resultAssetIds: string[]; errorMessage?: string; errorDetail?: string; retryCount: number; createdAt: number; startedAt?: number; finishedAt?: number }
