@@ -3,7 +3,7 @@ import { cancelJob } from '../api/client';
 
 interface Props { jobs: Job[]; root: string; onRefresh: () => void }
 
-const KIND_LABEL: Record<Job['kind'], string> = { exportFrames: '导出首尾帧', upscaleImage: '图片放大', upscaleVideo: '视频放大', interpolateVideo: '视频补帧' };
+const KIND_LABEL: Record<Job['kind'], string> = { exportFrames: '导出首尾帧', upscaleImage: '图片放大', upscaleVideo: '视频放大', interpolateVideo: '视频补帧', splitImage: '图片分割', exportTimeline: '导出成片' };
 const STATUS_LABEL: Record<Job['status'], string> = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', cancelled: '已取消' };
 
 function duration(job: Job) {

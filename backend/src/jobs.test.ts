@@ -7,6 +7,9 @@ import {
   buildBatchExtractArgs,
   buildConcatArgs,
   buildExportFrameArgs,
+  buildGridFilterGraph,
+  buildGridSplitArgs,
+  buildExportTimelineArgs,
   buildMuxAudioArgs,
   buildRealEsrganArgs,
   buildRifeArgs,
@@ -21,6 +24,7 @@ import {
   frameDisplayName,
   frameFileExtension,
   getJob,
+  gridCellDisplayName,
   halveTile,
   interpolatedFps,
   isGpuMemoryError,
@@ -30,11 +34,17 @@ import {
   parseFfmpegProgress,
   parseFrameCount,
   parseFrameRate,
+  parseGridDivision,
   parseNcnnProgress,
   planFrameBatches,
+  planGridCells,
   queueStatusText,
+  readExportTimelineOptions,
   restoreJobs,
+  sanitizeExportFileName,
+  splitAxis,
 } from './jobs.js';
+import { compileEdl } from './filtergraph.js';
 
 /**
  * 这里只测不被外部工具（ffmpeg / realesrgan / rife）阻塞的纯逻辑。
@@ -345,5 +355,208 @@ test('cancelJob 对不存在或已结束的任务返回 false', async (t) => {
   while (Date.now() < deadline && !settled(getJob(root, job.id) ?? { status: 'running' })) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(getJob(root, job.id)?.errorMessage, '这个任务没有指定素材，请重新选择素材后再执行');
   assert.equal(await cancelJob(root, job.id), false, '已经结束的任务不能再取消');
+});
+
+// ── 图片分割：网格切分（不依赖 ffmpeg 的纯逻辑）──────────
+
+const gridCases: Array<[number, number, number, number]> = [
+  [754, 882, 2, 2],
+  [754, 882, 3, 3],
+  [754, 882, 1, 3],
+  [1920, 1080, 3, 2],
+  [1920, 1080, 4, 4],
+  [1920, 1080, 1, 1],
+  [100, 100, 8, 8],
+  [17, 5, 3, 4],
+];
+
+test('planGridCells：格子不越界、数量正确、面积之和等于原图面积', () => {
+  for (const [width, height, cols, rows] of gridCases) {
+    const cells = planGridCells(width, height, cols, rows);
+    assert.equal(cells.length, cols * rows, `${width}x${height} 切 ${cols}x${rows} 的格子数量不对`);
+    for (const cell of cells) {
+      assert.ok(cell.x + cell.width <= width, `${width} 宽的图出现了越界的格子：${JSON.stringify(cell)}`);
+      assert.ok(cell.y + cell.height <= height, `${height} 高的图出现了越界的格子：${JSON.stringify(cell)}`);
+      assert.ok(cell.width >= 1 && cell.height >= 1, `格子不能是 0 像素：${JSON.stringify(cell)}`);
+      assert.ok(cell.row >= 1 && cell.row <= rows && cell.col >= 1 && cell.col <= cols);
+    }
+    const area = cells.reduce((sum, cell) => sum + cell.width * cell.height, 0);
+    assert.equal(area, width * height, `${width}x${height} 切 ${cols}x${rows} 后面积不守恒（丢像素或重叠）`);
+  }
+});
+
+test('planGridCells：逐像素检查覆盖整张图且互不重叠', () => {
+  const width = 101;
+  const height = 73;
+  const covered = new Set<string>();
+  for (const cell of planGridCells(width, height, 4, 3)) {
+    for (let y = cell.y; y < cell.y + cell.height; y += 1) {
+      for (let x = cell.x; x < cell.x + cell.width; x += 1) {
+        const key = `${x},${y}`;
+        assert.equal(covered.has(key), false, `像素 ${key} 被切了两次`);
+        covered.add(key);
+      }
+    }
+  }
+  assert.equal(covered.size, width * height, '每个像素都必须恰好被切到一次');
+});
+
+test('splitAxis：前 n-1 格取整除尺寸、最后一格吃掉余数，绝不出 0 像素', () => {
+  assert.deepEqual(splitAxis(754, 3, '宽'), [251, 251, 252]);
+  assert.deepEqual(splitAxis(882, 3, '高'), [294, 294, 294]);
+  assert.deepEqual(splitAxis(1920, 3, '宽'), [640, 640, 640]);
+  assert.deepEqual(splitAxis(1080, 2, '高'), [540, 540]);
+  assert.deepEqual(splitAxis(7, 4, '宽'), [1, 1, 1, 4]);
+  // 「每格都向上取整」的算法在 4 像素切 3 格时会给出 0 像素的最后一格，这里必须不是
+  assert.deepEqual(splitAxis(4, 3, '宽'), [1, 1, 2]);
+  assert.throws(() => splitAxis(2, 3, '宽'), /切不成 3 格/);
+});
+
+test('planGridCells 的坐标顺序是左上到右下，行列从 1 开始', () => {
+  assert.deepEqual(planGridCells(1920, 1080, 3, 2).map((cell) => [cell.row, cell.col, cell.x, cell.y, cell.width, cell.height]), [
+    [1, 1, 0, 0, 640, 540],
+    [1, 2, 640, 0, 640, 540],
+    [1, 3, 1280, 0, 640, 540],
+    [2, 1, 0, 540, 640, 540],
+    [2, 2, 640, 540, 640, 540],
+    [2, 3, 1280, 540, 640, 540],
+  ]);
+  assert.deepEqual(planGridCells(754, 882, 1, 1), [{ row: 1, col: 1, x: 0, y: 0, width: 754, height: 882 }]);
+});
+
+test('行列数超出 1~8 或用非整数时用中文拒绝', () => {
+  for (const value of [0, 9, -1, -8, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 'abc', null, undefined, {}]) {
+    assert.throws(() => planGridCells(754, 882, value, 2), /必须是整数|只能是 1 到 8 之间的整数/);
+    assert.throws(() => planGridCells(754, 882, 2, value), /必须是整数|只能是 1 到 8 之间的整数/);
+    assert.throws(() => parseGridDivision(value, '行数'), /必须是整数|只能是 1 到 8 之间的整数/);
+  }
+  assert.equal(parseGridDivision(1, '列数'), 1);
+  assert.equal(parseGridDivision(8, '行数'), 8);
+  assert.equal(parseGridDivision('3', '列数'), 3, '前端传字符串数字也要收');
+  // 图太小切不出目标格数时要明确拒绝，而不是产出 0 像素的格子
+  assert.throws(() => planGridCells(2, 2, 3, 3), /切不成 3 格/);
+  assert.throws(() => planGridCells(0, 100, 2, 2), /读不出图片的真实尺寸/);
+});
+
+test('切块的显示名与 ffmpeg 参数按约定生成', () => {
+  const cells = planGridCells(754, 882, 3, 3);
+  assert.equal(gridCellDisplayName('小猫咪.jpg', cells[0]), '小猫咪-第1行第1列.png');
+  assert.equal(gridCellDisplayName('小猫咪.jpg', cells[4]), '小猫咪-第2行第2列.png');
+  assert.equal(gridCellDisplayName('小猫咪.jpg', cells[8]), '小猫咪-第3行第3列.png');
+  assert.equal(gridCellDisplayName('没有扩展名', cells[1]), '没有扩展名-第1行第2列.png');
+  assert.equal(gridCellDisplayName('   ', cells[0]), '素材-第1行第1列.png');
+
+  const graph = buildGridFilterGraph(planGridCells(754, 882, 2, 2));
+  // 先转 rgb24：4:2:0 素材（JPEG）在奇数坐标上 crop 会被强行对齐到偶数，会丢像素
+  assert.match(graph, /\[0:v\]format=rgb24,split=4\[s0\]\[s1\]\[s2\]\[s3\]/);
+  assert.match(graph, /\[s0\]crop=377:441:0:0\[c0\]/);
+  assert.match(graph, /\[s1\]crop=377:441:377:0\[c1\]/);
+  assert.match(graph, /\[s3\]crop=377:441:377:441\[c3\]/);
+
+  const args = buildGridSplitArgs('C:/素材/小猫咪.jpg', 'C:/temp/grid.txt', ['o0.png', 'o1.png', 'o2.png', 'o3.png']);
+  assert.deepEqual(args, [
+    '-y', '-i', 'C:/素材/小猫咪.jpg', '-filter_complex_script', 'C:/temp/grid.txt',
+    '-map', '[c0]', 'o0.png', '-map', '[c1]', 'o1.png', '-map', '[c2]', 'o2.png', '-map', '[c3]', 'o3.png',
+  ]);
+  assert.equal(args.includes('&&'), false, '一律参数数组 spawn，不许拼 shell 字符串');
+});
+
+// ── 时间轴导出：设置解析与导出前校验 ───────────────────
+
+test('导出命令行只传 -filter_complex_script，绝不把滤镜拼进命令行', () => {
+  const compiled = compileEdl(
+    { fps: 30, width: 1280, height: 720, backgroundColor: '#000000', clips: [
+      { path: 'C:/x/a.mp4', inPoint: 0, outPoint: 4, startAt: 0, speed: 2, hasAudio: true, audioMode: 'keep' },
+    ] },
+    { fileName: '成片.mp4', crf: 18, preset: 'medium', encoder: 'libx264', width: 1280, height: 720, fps: 30 },
+  );
+  const args = buildExportTimelineArgs(compiled, 'C:\\临时\\export.txt', 'C:\\临时\\out.mp4');
+  assert.equal(args[args.indexOf('-filter_complex_script') + 1], 'C:\\临时\\export.txt');
+  assert.equal(args[args.indexOf('-progress') + 1], 'pipe:1');
+  assert.deepEqual(args.slice(args.indexOf('-i'), args.indexOf('-filter_complex_script')), ['-i', 'C:/x/a.mp4']);
+  const maps = args.indexOf('-map');
+  assert.deepEqual(args.slice(maps, maps + 4), ['-map', '[vcat]', '-map', '[acat]']);
+  assert.equal(args.at(-1), 'C:\\临时\\out.mp4');
+  // 滤镜文本一个字符都不能出现在命令行里（AGENTS.md 4.6 的红线）
+  for (const banned of ['trim=', 'concat=', 'between(', 'atempo=', 'filter_complex=']) {
+    assert.equal(args.some((arg) => arg.includes(banned)), false, `命令行里不该出现 ${banned}`);
+  }
+});
+
+test('sanitizeExportFileName 清掉 Windows 非法字符并保证是 mp4', () => {
+  assert.equal(sanitizeExportFileName('我的成片.mp4'), '我的成片.mp4');
+  assert.equal(sanitizeExportFileName('我的成片'), '我的成片.mp4');
+  assert.equal(sanitizeExportFileName('a/b\\c:d*e?f.mp4'), 'abcdef.mp4');
+  assert.equal(sanitizeExportFileName('  spacing  多  空格  '), 'spacing 多 空格.mp4');
+  assert.equal(sanitizeExportFileName('   '), '成片.mp4');
+  assert.equal(sanitizeExportFileName('...'), '成片.mp4');
+  assert.equal(sanitizeExportFileName('.mp4'), '成片.mp4');
+  assert.equal(sanitizeExportFileName(undefined), '成片.mp4');
+});
+
+test('readExportTimelineOptions 缺内容时给中文提示，不缺时补默认值', () => {
+  assert.throws(() => readExportTimelineOptions(undefined), /没有收到时间轴内容/);
+  assert.throws(() => readExportTimelineOptions({ settings: {} }), /没有收到时间轴内容/);
+  assert.throws(() => readExportTimelineOptions({ edl: { clips: [] } }), /没有收到导出设置|没有可导出的片段/);
+  assert.throws(() => readExportTimelineOptions({ edl: { clips: [] }, settings: {} }), /没有可导出的片段/);
+  assert.throws(() => readExportTimelineOptions({ edl: { clips: [{}] }, settings: {} }), /没有对应的素材文件/);
+
+  const { edl, settings } = readExportTimelineOptions({
+    edl: { fps: 30, width: 1920, height: 1080, clips: [{ path: 'C:/a.mp4', inPoint: 1, outPoint: 5 }] },
+    settings: { fileName: '成片' },
+  });
+  assert.equal(settings.fileName, '成片.mp4');
+  assert.equal(settings.crf, 18);
+  assert.equal(settings.preset, 'medium');
+  assert.equal(settings.encoder, 'libx264');
+  assert.equal(settings.width, 1920);
+  assert.equal(settings.height, 1080);
+  assert.equal(settings.fps, 30);
+  assert.equal(edl.backgroundColor, '#000000');
+  assert.equal(edl.clips[0].speed, 1, '没写变速就按原速');
+  assert.equal(edl.clips[0].hasAudio, false);
+  assert.equal(edl.clips[0].audioMode, 'keep');
+});
+
+test('导出任务：片段的入点出点不合法时用中文拒绝，且不会去调 ffmpeg', async (t) => {
+  const root = await tempRoot(t);
+  const job = enqueueJob(root, {
+    projectId: 'p1',
+    kind: 'exportTimeline',
+    assetIds: [],
+    options: {
+      edl: { fps: 30, width: 1280, height: 720, backgroundColor: '#000000', clips: [
+        { path: join(root, '随便.mp4'), inPoint: 5, outPoint: 2, startAt: 0, speed: 1, hasAudio: true, audioMode: 'keep' },
+      ] },
+      settings: { fileName: '成片', crf: 18, preset: 'medium', encoder: 'libx264', width: 1280, height: 720, fps: 30 },
+    },
+  });
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && !settled(getJob(root, job.id) ?? { status: 'running' })) await new Promise((resolve) => setTimeout(resolve, 10));
+  const finished = getJob(root, job.id);
+  assert.equal(finished?.status, 'failed');
+  assert.match(String(finished?.errorMessage), /片段 1：入点必须小于出点/);
+});
+
+test('导出任务：素材文件缺失时先拒绝，并列出缺了哪些', async (t) => {
+  const root = await tempRoot(t);
+  const missing = join(root, '已经删掉的素材.mp4');
+  const job = enqueueJob(root, {
+    projectId: 'p1',
+    kind: 'exportTimeline',
+    assetIds: [],
+    options: {
+      edl: { fps: 30, width: 1280, height: 720, backgroundColor: '#000000', clips: [
+        { path: missing, inPoint: 0, outPoint: 4, startAt: 0, speed: 1, hasAudio: true, audioMode: 'keep' },
+      ] },
+      settings: { fileName: '成片', crf: 18, preset: 'medium', encoder: 'libx264', width: 1280, height: 720, fps: 30 },
+    },
+  });
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && !settled(getJob(root, job.id) ?? { status: 'running' })) await new Promise((resolve) => setTimeout(resolve, 10));
+  const finished = getJob(root, job.id);
+  assert.equal(finished?.status, 'failed');
+  assert.match(String(finished?.errorMessage), /素材文件找不到了/);
+  assert.ok(finished?.errorDetail?.includes(missing), finished?.errorDetail);
 });
 

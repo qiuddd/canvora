@@ -1,5 +1,4 @@
 import type { NodeKind, PortKind } from '@canvora/shared';
-
 export interface PortSpec {
   id: string;
   label: string;
@@ -39,9 +38,12 @@ const SPECS: Record<NodeKind, NodeSpec> = {
     outputs: [{ id: 'out', label: '视频', kind: 'video', multiple: true }],
   },
   llm: { inputs: [{ id: 'input', label: '输入', kind: 'text' }], outputs: [{ id: 'out', label: '文本', kind: 'text' }] },
-  upscale: { inputs: [{ id: 'in', label: '素材', kind: 'any', accepts: any }], outputs: [{ id: 'out', label: '结果', kind: 'any' }] },
-  interpolate: { inputs: [{ id: 'in', label: '视频', kind: 'video' }], outputs: [{ id: 'out', label: '视频', kind: 'video' }] },
-  extractFrame: { inputs: [{ id: 'in', label: '视频', kind: 'video' }], outputs: [{ id: 'out', label: '图片', kind: 'image' }] },
+  // 放大允许接多张图或多段视频：一次任务里批量处理
+  upscale: { inputs: [{ id: 'in', label: '素材', kind: 'any', accepts: any, multiple: true }], outputs: [{ id: 'out', label: '结果', kind: 'any', multiple: true }] },
+  interpolate: { inputs: [{ id: 'in', label: '视频', kind: 'video', multiple: true }], outputs: [{ id: 'out', label: '视频', kind: 'video', multiple: true }] },
+  extractFrame: { inputs: [{ id: 'in', label: '视频', kind: 'video' }], outputs: [{ id: 'out', label: '图片', kind: 'image', multiple: true }] },
+  splitImage: { inputs: [{ id: 'in', label: '图片', kind: 'image', multiple: true }], outputs: [{ id: 'out', label: '切块', kind: 'image', multiple: true }] },
+  group: { inputs: [], outputs: [] },
 };
 
 export function nodeSpec(kind: NodeKind): NodeSpec {
@@ -70,4 +72,17 @@ export const PORT_ROW_HEIGHT = 22;
 
 export function portCenterY(index: number): number {
   return HEADER_HEIGHT + PORTS_PADDING_TOP + index * PORT_ROW_HEIGHT + PORT_ROW_HEIGHT / 2;
+}
+
+/**
+ * 从一个输出口能接到哪些节点类型：只要该节点存在一个能接受这种类型的输入口就算兼容。
+ * 用于「拖线到空白处」时只列出这一步真正能用的功能。
+ */
+export function compatibleKinds(from: PortKind): NodeKind[] {
+  return (Object.keys(SPECS) as NodeKind[]).filter((kind) => SPECS[kind].inputs.some((spec) => portsCompatible(from, spec)));
+}
+
+/** 该节点能不能直接吃某类素材（素材库拖到画布时用来挑默认节点）。 */
+export function acceptsAsset(kind: NodeKind, assetKind: PortKind): boolean {
+  return SPECS[kind].inputs.some((spec) => portsCompatible(assetKind, spec));
 }

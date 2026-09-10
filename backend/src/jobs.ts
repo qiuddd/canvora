@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { mkdir, readdir, rm, statfs } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, statfs } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { basename, dirname, extname, join } from 'node:path';
 import { nanoid } from 'nanoid';
-import type { Asset, Job, JobKind, JobStatus, ToolStatus, WorkspaceState } from '@canvora/shared';
+import type { Asset, Edl, EdlClip, ExportSettings, Job, JobKind, JobStatus, ToolStatus, WorkspaceState } from '@canvora/shared';
 import {
   assetAbsolutePath,
   assetById,
@@ -12,6 +12,7 @@ import {
   projectDirectory,
   registerGeneratedAsset,
 } from './workspace.js';
+import { compileEdl, totalTimelineDuration } from './filtergraph.js';
 import { buildFfprobeArgs } from './media/media.js';
 import { killProcessTree } from './media/process.js';
 
@@ -133,6 +134,179 @@ export function displayBaseName(originalName: string): string {
 
 export function frameDisplayName(originalName: string, position: 'first' | 'last'): string {
   return `${displayBaseName(originalName)}-${position === 'first' ? '首帧' : '尾帧'}.jpg`;
+}
+
+// ── 图片分割（网格切块）────────────────────────────────
+
+/** 行列数的合法范围：1~8（8×8 = 64 块，再多在画布上也管不过来）。 */
+export const MIN_GRID_DIVISION = 1;
+export const MAX_GRID_DIVISION = 8;
+
+export interface GridCell {
+  /** 行号，从 1 开始。 */
+  row: number;
+  /** 列号，从 1 开始。 */
+  col: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export function parseGridDivision(value: unknown, label: '列数' | '行数'): number {
+  const numeric = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  if (typeof numeric !== 'number' || !Number.isFinite(numeric) || !Number.isInteger(numeric)) {
+    throw new JobError(`${label}必须是整数`, `收到的值：${JSON.stringify(value) ?? 'undefined'}`);
+  }
+  if (numeric < MIN_GRID_DIVISION || numeric > MAX_GRID_DIVISION) {
+    throw new JobError(`${label}只能是 ${MIN_GRID_DIVISION} 到 ${MAX_GRID_DIVISION} 之间的整数`, `收到的值：${numeric}（范围 ${MIN_GRID_DIVISION}~${MAX_GRID_DIVISION}）`);
+  }
+  return numeric;
+}
+
+/**
+ * 一条边的格子尺寸：前 n-1 格取整除尺寸，最后一格吃掉余数。
+ * 不用「每格都向上取整」的分配法：图很小、格数偏多时那种算法会把最后一格算成 0 像素，
+ * 交给 crop 就是一个必然失败的格子。这里的分配保证每格 ≥ 1 像素，且各格之和严格等于原边长。
+ */
+export function splitAxis(total: number, count: number, label: '宽' | '高'): number[] {
+  const base = Math.floor(total / count);
+  if (base < 1) throw new JobError(`图片${label}只有 ${total} 像素，切不成 ${count} 格，请减少行列数`, `${label}=${total}，格数=${count}`);
+  const sizes = new Array<number>(count).fill(base);
+  sizes[count - 1] = total - base * (count - 1);
+  return sizes;
+}
+
+/** 网格切分计算：从左到右、从上到下逐格给出 crop 需要的坐标与尺寸。 */
+export function planGridCells(width: number, height: number, cols: unknown, rows: unknown): GridCell[] {
+  const safeCols = parseGridDivision(cols, '列数');
+  const safeRows = parseGridDivision(rows, '行数');
+  if (!Number.isInteger(width) || width < 1 || !Number.isInteger(height) || height < 1) {
+    throw new JobError('读不出图片的真实尺寸，无法按网格切块', `宽 ${String(width)} 高 ${String(height)}`);
+  }
+  const widths = splitAxis(width, safeCols, '宽');
+  const heights = splitAxis(height, safeRows, '高');
+  const offsetOf = (sizes: number[], index: number) => sizes.slice(0, index).reduce((sum, size) => sum + size, 0);
+  const cells: GridCell[] = [];
+  for (let row = 0; row < safeRows; row += 1) {
+    for (let col = 0; col < safeCols; col += 1) {
+      cells.push({ row: row + 1, col: col + 1, x: offsetOf(widths, col), y: offsetOf(heights, row), width: widths[col], height: heights[row] });
+    }
+  }
+  return cells;
+}
+
+/** 切块的素材显示名，如「小猫咪-第2行第3列.png」。行列都从 1 开始，和用户在界面上数的一致。 */
+export function gridCellDisplayName(originalName: string, cell: GridCell): string {
+  return `${displayBaseName(originalName)}-第${cell.row}行第${cell.col}列.png`;
+}
+
+/**
+ * 一次 ffmpeg 调用切完所有格子：先把输入拆成 n 路再逐格 crop，避免为同一张图开 n 个进程重复解码。
+ *
+ * 必须先把像素格式转成 rgb24：JPEG 这类 4:2:0 素材的色度是半分辨率，crop 在奇数坐标/奇数宽度上
+ * 会被强行对齐到偶数（实测 754 宽切 3 列时每格只有 250 像素，9 格加起来比原图少 1764 像素）。
+ * rgb24 是全采样，crop 几何不再受约束，切出来的格子逐像素覆盖原图。
+ */
+export function buildGridFilterGraph(cells: GridCell[]): string {
+  const splitOutputs = cells.map((_, index) => `[s${index}]`).join('');
+  const lines = [`[0:v]format=rgb24,split=${cells.length}${splitOutputs}`];
+  cells.forEach((cell, index) => lines.push(`[s${index}]crop=${cell.width}:${cell.height}:${cell.x}:${cell.y}[c${index}]`));
+  return lines.join(';\n');
+}
+
+/** 滤镜图走临时文件（AGENTS.md 4.6），输出的 -map 顺序与 cells 一一对应。 */
+export function buildGridSplitArgs(inputPath: string, graphFile: string, outputs: string[]): string[] {
+  const args = ['-y', '-i', inputPath, '-filter_complex_script', graphFile];
+  outputs.forEach((output, index) => args.push('-map', `[c${index}]`, output));
+  return args;
+}
+
+// ── 时间轴导出 ────────────────────────────────────────
+
+export const DEFAULT_EXPORT_CRF = 18;
+export const DEFAULT_EXPORT_PRESET = 'medium';
+
+/** 文件名里 Windows 不允许的字符（<>:"/\|?* 与控制字符），另外去掉首尾的点和空格。 */
+export function sanitizeExportFileName(name: unknown): string {
+  const raw = typeof name === 'string' ? name.replace(/\.mp4$/i, '') : '';
+  const cleaned = raw
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+    .slice(0, 80);
+  return `${cleaned || '成片'}.mp4`;
+}
+
+export interface ExportTimelineOptions { edl: Edl; settings: ExportSettings }
+
+/**
+ * 规整前端提交的 options（EDL + 导出设置）：缺项和脏值都在这里挡掉，报错是中文。
+ * 数值只做类型与缺省处理，区间校验交给 compileEdl 里的 validateEdl（那边是唯一一处规则来源）。
+ */
+export function readExportTimelineOptions(options: Record<string, unknown> | undefined): ExportTimelineOptions {
+  const rawEdl = options?.edl;
+  if (!rawEdl || typeof rawEdl !== 'object') throw new JobError('没有收到时间轴内容，无法导出，请重新打开导出面板');
+  const rawSettings = options?.settings;
+  if (!rawSettings || typeof rawSettings !== 'object') throw new JobError('没有收到导出设置，无法导出，请重新打开导出面板');
+
+  const edl = rawEdl as Partial<Edl>;
+  if (!Array.isArray(edl.clips) || edl.clips.length === 0) throw new JobError('时间轴上没有可导出的片段，请先往时间轴放素材');
+
+  const clips: EdlClip[] = edl.clips.map((raw, index) => {
+    if (!raw || typeof raw !== 'object') throw new JobError(`第 ${index + 1} 个片段的数据不完整，请重新打开导出面板`);
+    const clip = raw as Partial<EdlClip>;
+    if (typeof clip.path !== 'string' || !clip.path.trim()) throw new JobError(`第 ${index + 1} 个片段没有对应的素材文件，请重新导入素材`);
+    return {
+      path: clip.path,
+      inPoint: readNumber(clip.inPoint, Number.NaN),
+      outPoint: readNumber(clip.outPoint, Number.NaN),
+      startAt: readNumber(clip.startAt, 0),
+      speed: readNumber(clip.speed, 1),
+      hasAudio: clip.hasAudio === true,
+      audioMode: clip.audioMode === 'mute' || clip.audioMode === 'keepPitchCorrected' ? clip.audioMode : 'keep',
+      colorGrade: clip.colorGrade,
+      overlays: Array.isArray(clip.overlays)
+        ? clip.overlays.map((rawOverlay) => {
+            const overlay = (rawOverlay ?? {}) as Record<string, unknown>;
+            return {
+              path: typeof overlay.path === 'string' ? overlay.path : '',
+              x: readNumber(overlay.x, 0),
+              y: readNumber(overlay.y, 0),
+              widthRatio: readNumber(overlay.widthRatio, 1),
+              opacity: readNumber(overlay.opacity, 1),
+              startSec: readNumber(overlay.startSec, Number.NaN),
+              endSec: readNumber(overlay.endSec, Number.NaN),
+              fadeInSec: readNumber(overlay.fadeInSec, 0),
+              fadeOutSec: readNumber(overlay.fadeOutSec, 0),
+            };
+          })
+        : undefined,
+    };
+  });
+
+  const settings = rawSettings as Partial<ExportSettings>;
+  const width = Math.round(readNumber(settings.width, readNumber(edl.width, 0)));
+  const height = Math.round(readNumber(settings.height, readNumber(edl.height, 0)));
+  const fps = readNumber(settings.fps, readNumber(edl.fps, 30));
+  return {
+    edl: {
+      fps,
+      width,
+      height,
+      backgroundColor: typeof edl.backgroundColor === 'string' ? edl.backgroundColor : '#000000',
+      clips,
+    },
+    settings: {
+      fileName: sanitizeExportFileName(settings.fileName),
+      crf: Math.round(readNumber(settings.crf, DEFAULT_EXPORT_CRF)),
+      preset: readString(settings.preset) ?? DEFAULT_EXPORT_PRESET,
+      encoder: settings.encoder === 'h264_nvenc' ? 'h264_nvenc' : 'libx264',
+      width,
+      height,
+      fps,
+    },
+  };
 }
 
 /**
@@ -684,6 +858,8 @@ async function execute(workspaceRoot: string, job: StoredJob): Promise<void> {
 
 async function runJob(ctx: JobContext): Promise<string[]> {
   const { job } = ctx;
+  // 时间轴导出的输入是 EDL 里的绝对路径，不依赖 assetIds，所以放在素材检查之前。
+  if (job.kind === 'exportTimeline') return runExportTimeline(ctx);
   if (job.assetIds.length === 0) throw new JobError('这个任务没有指定素材，请重新选择素材后再执行');
   const state = await ensureWorkspace(ctx.root);
   const assets = job.assetIds.map((id) => assetById(state, id)).filter((asset): asset is Asset => Boolean(asset));
@@ -699,6 +875,8 @@ async function runJob(ctx: JobContext): Promise<string[]> {
       return runVideoUpscale(ctx, state, assets);
     case 'interpolateVideo':
       return runVideoInterpolate(ctx, state, assets);
+    case 'splitImage':
+      return runSplitImages(ctx, state, assets);
     default:
       throw new JobError('这个任务类型还不支持', `未知的任务类型：${String(job.kind)}`);
   }
@@ -743,6 +921,180 @@ async function exportFrameOne(ctx: JobContext, state: WorkspaceState, asset: Ass
   report(ctx, { progress: base + span, statusText: `已抽出${position === 'first' ? '首帧' : '尾帧'}并加入素材库` });
   return registered.id;
 }
+
+// ── 图片分割 ──────────────────────────────────────────
+
+async function probeImageSize(ctx: JobContext, path: string): Promise<{ width: number; height: number }> {
+  const ffprobe = resolveFfprobe(ctx.root);
+  const outcome = await runChild(ctx, ffprobe, buildFfprobeArgs(path));
+  let parsed: { streams?: Array<Record<string, unknown>> };
+  try {
+    parsed = JSON.parse(outcome.stdout) as typeof parsed;
+  } catch {
+    throw new JobError('读不出图片信息，文件可能损坏', `ffprobe 输出无法解析：${outcome.stdout.slice(0, 500)}`);
+  }
+  const stream = (parsed.streams ?? []).find((item) => item.codec_type === 'video');
+  const width = Number(stream?.width);
+  const height = Number(stream?.height);
+  if (!Number.isInteger(width) || width < 1 || !Number.isInteger(height) || height < 1) {
+    throw new JobError('读不出图片的真实尺寸，无法按网格切块', `${path}\n${outcome.stdout.slice(0, 500)}`);
+  }
+  return { width, height };
+}
+
+async function runSplitImages(ctx: JobContext, state: WorkspaceState, assets: Asset[]): Promise<string[]> {
+  const cols = parseGridDivision(ctx.job.options?.cols, '列数');
+  const rows = parseGridDivision(ctx.job.options?.rows, '行数');
+  const cellsPerImage = cols * rows;
+  const totalCells = assets.length * cellsPerImage;
+  const ffmpeg = resolveFfmpeg(ctx.root);
+  const tempDir = projectTempDir(ctx.root, ctx.job.projectId);
+  await mkdir(tempDir, { recursive: true });
+
+  // 先把所有输入查一遍：混进来一个视频或缺失的素材时，不要切了一半才失败
+  for (const [index, asset] of assets.entries()) {
+    if (asset.kind !== 'image') throw new JobError(`第 ${index + 1} 个素材不是图片，图片分割只能对图片素材使用`, `素材 ${asset.originalName}（${asset.id}）的类型是 ${asset.kind}`);
+    if (!existsSync(assetAbsolutePath(state, asset))) throw new JobError('素材文件找不到了，可能被移动或删除，请重新导入', assetAbsolutePath(state, asset));
+  }
+
+  const results: string[] = [];
+  let done = 0;
+  for (const [index, asset] of assets.entries()) {
+    throwIfCancelled(ctx);
+    const source = assetAbsolutePath(state, asset);
+    const prefix = assets.length > 1 ? `第 ${index + 1}/${assets.length} 张图：` : '';
+    report(ctx, { progress: done / totalCells, statusText: `${prefix}正在读取图片尺寸…` });
+    const { width, height } = await probeImageSize(ctx, source);
+    const cells = planGridCells(width, height, cols, rows);
+
+    const outputs = cells.map(() => join(tempDir, `grid-${nanoid(8)}.png`));
+    const graphFile = join(tempDir, `grid-${nanoid(8)}.txt`);
+    writeFileSync(graphFile, buildGridFilterGraph(cells), 'utf8');
+    report(ctx, { statusText: `${prefix}正在按 ${rows} 行 ${cols} 列切分（${width}×${height}）…` });
+
+    await runChild(ctx, ffmpeg, buildGridSplitArgs(source, graphFile, outputs));
+
+    for (const [cellIndex, output] of outputs.entries()) {
+      throwIfCancelled(ctx);
+      const cell = cells[cellIndex];
+      if (!existsSync(output)) {
+        throw new JobError(`第 ${cell.row} 行第 ${cell.col} 列没有切出来，图片可能损坏`, `预期输出：${output}`);
+      }
+      const registered = await registerGeneratedAsset(ctx.root, asset.projectId, output, gridCellDisplayName(asset.originalName, cell), 'split');
+      results.push(registered.id);
+      done += 1;
+      report(ctx, { progress: done / totalCells, statusText: `${prefix}第 ${done}/${totalCells} 格 · 第 ${cell.row} 行第 ${cell.col} 列（${cell.width}×${cell.height}）已加入素材库` });
+    }
+    await rm(graphFile, { force: true }).catch(() => undefined);
+  }
+  return results;
+}
+
+// ── 时间轴导出 ────────────────────────────────────────
+
+/** 导出用的一次 ffmpeg 调用：滤镜图写进临时文件，用 -filter_complex_script 传（AGENTS.md 4.6）。 */
+export function buildExportTimelineArgs(compiled: { inputs: string[]; maps: string[]; outputArgs: string[] }, graphFile: string, outputPath: string): string[] {
+  return [
+    '-y',
+    '-progress', 'pipe:1',
+    ...compiled.inputs.flatMap((path) => ['-i', path]),
+    '-filter_complex_script', graphFile,
+    ...compiled.maps,
+    ...compiled.outputArgs,
+    outputPath,
+  ];
+}
+
+async function runExportTimeline(ctx: JobContext): Promise<string[]> {
+  const { edl, settings } = readExportTimelineOptions(ctx.job.options);
+  const state = await ensureWorkspace(ctx.root);
+  await ensureProjectDirectories(state, ctx.job.projectId);
+  const projectDir = projectDirectory(state, ctx.job.projectId);
+  const tempDir = projectTempDir(ctx.root, ctx.job.projectId);
+  await mkdir(join(projectDir, 'exports'), { recursive: true });
+  await mkdir(tempDir, { recursive: true });
+
+  let compiled: ReturnType<typeof compileEdl>;
+  try {
+    compiled = compileEdl(edl, settings);
+  } catch (error) {
+    // 结构校验不通过（入点出点、变速范围、贴图时间窗、分辨率）：中文原因直接给用户看
+    throw new JobError(error instanceof Error ? error.message : '导出参数不合法', '滤镜图编译前的校验（PRD 10.1 第 1 步）未通过');
+  }
+
+  // 一次把缺失的素材列全，别让用户导到一半才失败（TASKS 7.2.5）
+  const missing = compiled.inputs.filter((path) => !path || !existsSync(path));
+  if (missing.length > 0) {
+    throw new JobError(`有 ${missing.length} 个素材文件找不到了，导出已中止，请把缺失的素材重新导入后再试`, missing.join('\n'));
+  }
+
+  const outputFile = join(projectDir, 'exports', settings.fileName);
+  const renderFile = join(tempDir, `export-${nanoid(8)}.mp4`);
+  const graphFile = join(tempDir, `export-${nanoid(8)}.txt`);
+  const logFile = join(projectDir, 'exports', `${settings.fileName.replace(/\.mp4$/i, '')}.ffmpeg.log`);
+  writeFileSync(graphFile, compiled.filterGraph, 'utf8');
+
+  const totalDuration = totalTimelineDuration(edl);
+  const startedAt = Date.now();
+  const args = buildExportTimelineArgs(compiled, graphFile, renderFile);
+  let stderr = '';
+  report(ctx, { progress: 0.01, statusText: `正在导出「${settings.fileName}」…` });
+
+  let outcome: ProcessOutcome;
+  try {
+    outcome = await runChild(ctx, resolveFfmpeg(ctx.root), args, {
+      allowFailure: true,
+      onStdout: (chunk) => {
+        const ratio = parseFfmpegProgress(chunk, totalDuration);
+        if (ratio === undefined) return;
+        const elapsedSec = (Date.now() - startedAt) / 1000;
+        const remaining = ratio > 0.005 ? `预计剩余 ${formatDurationCn((elapsedSec / ratio) * (1 - ratio))}` : '正在估算剩余时间';
+        report(ctx, { progress: 0.02 + ratio * 0.96, statusText: `正在导出…${Math.round(ratio * 100)}% · 已用 ${formatDurationCn(elapsedSec)} · ${remaining}` });
+      },
+      onStderr: (chunk) => { stderr += chunk; },
+    });
+  } catch (error) {
+    // 取消（或被其它原因打断）：进程树已经在队列层杀掉，这里把不完整的成片删掉（TASKS 7.2.10）
+    await rm(renderFile, { force: true }).catch(() => undefined);
+    await rm(outputFile, { force: true }).catch(() => undefined);
+    await rm(graphFile, { force: true }).catch(() => undefined);
+    throw error;
+  }
+
+  if (!outcome.ok) {
+    await rm(renderFile, { force: true }).catch(() => undefined);
+    const log = [
+      `时间：${new Date().toISOString()}`,
+      `命令：ffmpeg ${args.join(' ')}`,
+      '',
+      '滤镜图：',
+      compiled.filterGraph,
+      '',
+      `ffmpeg 输出（退出码 ${outcome.exitCode}）：`,
+      stderr.trim() || '（没有输出错误信息）',
+      '',
+    ].join('\n');
+    try {
+      writeFileSync(logFile, log, 'utf8');
+    } catch {
+      // 日志写不进去也不能盖住真正的失败原因，下面照样把摘要给用户
+    }
+    throw new JobError(
+      `导出失败：ffmpeg 处理出错（退出码 ${outcome.exitCode}），详细日志已存到导出目录`,
+      `完整日志：${logFile}\n\n${shortStderr(stderr)}`,
+    );
+  }
+
+  if (!existsSync(renderFile)) throw new JobError('导出没有生成成片文件，请重试', `预期输出：${renderFile}`);
+  // exports/ 下留一份给用户打开所在文件夹看；registerGeneratedAsset 是移动语义，所以先复制再登记
+  await copyFile(renderFile, outputFile);
+  const registered = await registerGeneratedAsset(ctx.root, ctx.job.projectId, renderFile, settings.fileName, 'exported');
+  await rm(renderFile, { force: true }).catch(() => undefined);
+  await rm(graphFile, { force: true }).catch(() => undefined);
+  report(ctx, { progress: 1, statusText: `导出完成：${settings.fileName}` });
+  return [registered.id];
+}
+
 
 // ── 图片放大 ──────────────────────────────────────────
 

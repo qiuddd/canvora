@@ -1,23 +1,34 @@
 import { create } from 'zustand';
-import type { CanvasNode, CanvasSnapshot, ConnectResult, Edge, NodeKind, PortKind } from '@canvora/shared';
+import type { CanvasNode, CanvasSnapshot, ConnectResult, Edge, NodeGroup, NodeKind, PortKind } from '@canvora/shared';
 
 interface CanvasState {
   nodes: CanvasNode[];
   edges: Edge[];
-  selectedNodeId: string | null;
+  nodeGroups: NodeGroup[];
+  selectedNodeIds: string[];
   addNode: (kind: NodeKind, position?: { x: number; y: number }, data?: Record<string, unknown>) => string;
-  moveNode: (id: string, x: number, y: number) => void;
+  moveNodes: (ids: string[], delta: { x: number; y: number }) => void;
   updateNodeData: (id: string, patch: Record<string, unknown>) => void;
-  selectNode: (id: string | null) => void;
-  deleteNode: (id: string) => void;
-  duplicateNode: (id: string) => string | null;
+  setSelection: (ids: string[]) => void;
+  toggleSelection: (id: string) => void;
+  deleteSelection: () => void;
+  duplicateSelection: () => string[];
   connect: (fromNodeId: string, fromPortId: string, toNodeId: string, toPortId: string, kind: PortKind, multiple: boolean) => ConnectResult;
   deleteEdge: (id: string) => void;
+  createGroup: (title: string) => NodeGroup | null;
+  removeGroup: (groupId: string) => void;
+  toggleGroupCollapsed: (groupId: string) => void;
   replaceAll: (snapshot: CanvasSnapshot) => void;
   snapshot: () => CanvasSnapshot;
 }
 
-const TITLES: Record<NodeKind, string> = { prompt: '提示词', text: '文本', image: '图片素材', video: '视频素材', audio: '音频素材', generateImage: '生图', generateVideo: '生视频', llm: 'AI 文本', upscale: '图片放大', interpolate: '视频补帧', extractFrame: '抽帧', note: '便利贴' };
+const TITLES: Record<NodeKind, string> = {
+  prompt: '提示词', text: '文本', image: '图片素材', video: '视频素材', audio: '音频素材',
+  generateImage: '生图', generateVideo: '生视频', llm: 'AI 文本', upscale: '图片放大',
+  interpolate: '视频补帧', extractFrame: '抽帧', splitImage: '图片分割', group: '分组', note: '便利贴',
+};
+
+const GROUP_COLORS = ['#6366f1', '#0ea5e9', '#14b8a6', '#f59e0b', '#ec4899'];
 
 /** 判断从 from 出发能否走到 target，用于连线前的环检测。 */
 function reaches(edges: Edge[], from: string, target: string, seen = new Set<string>()): boolean {
@@ -30,7 +41,8 @@ function reaches(edges: Edge[], from: string, target: string, seen = new Set<str
 export const useCanvasStore = create<CanvasState>((set, get) => ({
   nodes: [],
   edges: [],
-  selectedNodeId: null,
+  nodeGroups: [],
+  selectedNodeIds: [],
 
   addNode: (kind, position, data) => {
     const state = get();
@@ -47,30 +59,49 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       data: data ?? (kind === 'prompt' || kind === 'text' || kind === 'note' ? { text: '' } : {}),
       createdAt: now, updatedAt: now,
     };
-    set({ nodes: [...state.nodes, node], selectedNodeId: id });
+    set({ nodes: [...state.nodes, node], selectedNodeIds: [id] });
     return id;
   },
 
-  moveNode: (id, x, y) => set((state) => ({ nodes: state.nodes.map((node) => node.id === id ? { ...node, x, y, updatedAt: Date.now() } : node) })),
+  moveNodes: (ids, delta) => set((state) => ({
+    nodes: state.nodes.map((node) => ids.includes(node.id)
+      ? { ...node, x: Math.max(0, node.x + delta.x), y: Math.max(0, node.y + delta.y), updatedAt: Date.now() }
+      : node),
+  })),
 
   updateNodeData: (id, patch) => set((state) => ({ nodes: state.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch }, updatedAt: Date.now() } : node) })),
 
-  selectNode: (selectedNodeId) => set({ selectedNodeId }),
+  setSelection: (selectedNodeIds) => set({ selectedNodeIds }),
+  toggleSelection: (id) => set((state) => ({ selectedNodeIds: state.selectedNodeIds.includes(id) ? state.selectedNodeIds.filter((item) => item !== id) : [...state.selectedNodeIds, id] })),
 
-  deleteNode: (id) => set((state) => ({
-    nodes: state.nodes.filter((node) => node.id !== id),
-    edges: state.edges.filter((edge) => edge.fromNodeId !== id && edge.toNodeId !== id),
-    selectedNodeId: state.selectedNodeId === id ? null : state.selectedNodeId,
-  })),
+  deleteSelection: () => set((state) => {
+    const ids = new Set(state.selectedNodeIds);
+    return {
+      nodes: state.nodes.filter((node) => !ids.has(node.id)),
+      edges: state.edges.filter((edge) => !ids.has(edge.fromNodeId) && !ids.has(edge.toNodeId)),
+      nodeGroups: state.nodeGroups
+        .map((group) => ({ ...group, memberIds: group.memberIds.filter((id) => !ids.has(id)) }))
+        .filter((group) => group.memberIds.length > 0),
+      selectedNodeIds: [],
+    };
+  }),
 
-  duplicateNode: (id) => {
+  duplicateSelection: () => {
     const state = get();
-    const source = state.nodes.find((node) => node.id === id);
-    if (!source) return null;
+    const sources = state.nodes.filter((node) => state.selectedNodeIds.includes(node.id));
+    if (!sources.length) return [];
     const now = Date.now();
-    const copy: CanvasNode = { ...source, id: crypto.randomUUID(), x: source.x + 32, y: source.y + 32, createdAt: now, updatedAt: now };
-    set({ nodes: [...state.nodes, copy], selectedNodeId: copy.id });
-    return copy.id;
+    // 组内一起复制时保留组内连线关系
+    const idMap = new Map(sources.map((node) => [node.id, crypto.randomUUID()]));
+    const copies: CanvasNode[] = sources.map((node) => ({
+      ...node, id: idMap.get(node.id) as string,
+      x: node.x + 32, y: node.y + 32, createdAt: now, updatedAt: now,
+    }));
+    const innerEdges: Edge[] = state.edges
+      .filter((edge) => idMap.has(edge.fromNodeId) && idMap.has(edge.toNodeId))
+      .map((edge) => ({ ...edge, id: crypto.randomUUID(), fromNodeId: idMap.get(edge.fromNodeId) as string, toNodeId: idMap.get(edge.toNodeId) as string, createdAt: now }));
+    set({ nodes: [...state.nodes, ...copies], edges: [...state.edges, ...innerEdges], selectedNodeIds: copies.map((node) => node.id) });
+    return copies.map((node) => node.id);
   },
 
   connect: (fromNodeId, fromPortId, toNodeId, toPortId, kind, multiple) => {
@@ -88,7 +119,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   deleteEdge: (id) => set((state) => ({ edges: state.edges.filter((edge) => edge.id !== id) })),
 
-  replaceAll: (snapshot) => set({ nodes: snapshot.nodes ?? [], edges: snapshot.edges ?? [], selectedNodeId: null }),
+  createGroup: (title) => {
+    const state = get();
+    if (state.selectedNodeIds.length < 2) return null;
+    const color = GROUP_COLORS[state.nodeGroups.length % GROUP_COLORS.length];
+    const group: NodeGroup = { id: crypto.randomUUID(), projectId: 'local', title: title || `分组 ${state.nodeGroups.length + 1}`, color, collapsed: false, memberIds: [...state.selectedNodeIds] };
+    set({ nodeGroups: [...state.nodeGroups, group] });
+    return group;
+  },
 
-  snapshot: () => ({ nodes: get().nodes, edges: get().edges }),
+  removeGroup: (groupId) => set((state) => ({ nodeGroups: state.nodeGroups.filter((group) => group.id !== groupId) })),
+
+  toggleGroupCollapsed: (groupId) => set((state) => ({ nodeGroups: state.nodeGroups.map((group) => group.id === groupId ? { ...group, collapsed: !group.collapsed } : group) })),
+
+  replaceAll: (snapshot) => set({ nodes: snapshot.nodes ?? [], edges: snapshot.edges ?? [], nodeGroups: snapshot.nodeGroups ?? [], selectedNodeIds: [] }),
+
+  snapshot: () => ({ nodes: get().nodes, edges: get().edges, nodeGroups: get().nodeGroups }),
 }));

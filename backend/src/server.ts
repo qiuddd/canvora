@@ -149,11 +149,13 @@ export const buildServer = () => {
   app.get<{ Params: { id: string } }>('/api/jobs/:id', async (request, reply) => getJob(rootOf(request), request.params.id) ?? reply.status(404).send({ message: '任务不存在' }));
   app.post('/api/jobs', async (request, reply) => {
     const body = request.body as { projectId?: string; kind?: JobKind; assetIds?: string[]; options?: Record<string, unknown> };
-    if (!body?.kind || !body.assetIds?.length) return reply.status(400).send({ message: '请先选择要处理的素材' });
+    if (!body?.kind) return reply.status(400).send({ message: '缺少任务类型' });
+    // 导出成片不需要素材 id：它的输入是整条 EDL
+    if (body.kind !== 'exportTimeline' && !body.assetIds?.length) return reply.status(400).send({ message: '请先选择要处理的素材' });
     const state = await ensureWorkspace(rootOf(request));
     const projectId = body.projectId ?? state.projects[0]?.id;
     if (!projectId) return reply.status(400).send({ message: '请先新建一个项目' });
-    try { return enqueueJob(state.root, { projectId, kind: body.kind, assetIds: body.assetIds, options: body.options }); }
+    try { return enqueueJob(state.root, { projectId, kind: body.kind, assetIds: body.assetIds ?? [], options: body.options }); }
     catch (error) { return reply.status(400).send(publicError(error)); }
   });
   app.post<{ Params: { id: string } }>('/api/jobs/:id/cancel', async (request) => ({ ok: await cancelJob(rootOf(request), request.params.id) }));

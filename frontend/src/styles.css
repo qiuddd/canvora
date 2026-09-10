@@ -261,3 +261,90 @@ button { cursor: pointer; border: 0; }
 .dark .statusbar { background: #1d232c; border-color: #303846; }
 .statusbar .muted { margin-left: auto; }
 
+/* ── 画布：框选、分组、参数控件 ───────────────────── */
+.select-box { position: absolute; z-index: 5; border: 1px solid #6366f1; background: #6366f11f; border-radius: 4px; pointer-events: none; }
+.node-group { position: absolute; z-index: 0; border: 2px dashed #6366f1; border-radius: 14px; background: #6366f10d; pointer-events: none; }
+.node-group-header { position: absolute; top: -26px; left: -2px; display: flex; align-items: center; gap: 10px; padding: 3px 10px; color: #fff; border-radius: 7px 7px 0 0; font-size: 11px; white-space: nowrap; pointer-events: auto; }
+.node-group-actions { display: flex; gap: 6px; }
+.node-group-actions button { padding: 1px 6px; color: #fff; background: #ffffff2e; border-radius: 4px; font-size: 10px; }
+.node-group-actions button:hover { background: #ffffff4d; }
+.selection-bar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 8px 14px; color: #4338ca; background: #eef2ff; border-radius: 9px; font-size: 12px; box-shadow: 0 6px 18px #1e293b1f; }
+.selection-bar button { padding: 5px 10px; color: #4338ca; background: #ffffff; border-radius: 6px; font-size: 11px; }
+.selection-bar button:hover { background: #e0e7ff; }
+.node-params { display: flex; flex-direction: column; gap: 7px; }
+.param-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #64748b; font-size: 11px; }
+.param-row select { flex: 1; max-width: 130px; padding: 5px 6px; color: inherit; border: 1px solid #e2e8f0; border-radius: 6px; background: transparent; }
+.dark .param-row select { border-color: #475569; }
+
+/* ── 主题切换 ─────────────────────────────────────── */
+.theme-switch { display: flex; padding: 2px; background: #f1f5f9; border-radius: 8px; }
+.dark .theme-switch { background: #263041; }
+.theme-switch button { padding: 5px 9px; color: #64748b; background: transparent; border-radius: 6px; font-size: 11px; }
+.theme-switch button.active { color: #fff; background: #4f46e5; }
+
+/* ── 对话：图片附件 ───────────────────────────────── */
+.bubble-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.bubble-images img { max-width: 120px; max-height: 120px; border-radius: 6px; object-fit: cover; }
+.attach-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+.attach-chip { position: relative; display: inline-block; }
+.attach-chip img { width: 54px; height: 54px; object-fit: cover; border-radius: 6px; }
+.attach-chip button { position: absolute; top: -5px; right: -5px; width: 17px; height: 17px; color: #fff; background: #ef4444; border-radius: 50%; font-size: 11px; line-height: 1; }
+.chat-actions { display: flex; align-items: center; gap: 8px; }
+.chat-actions .primary-button { margin-left: auto; padding: 8px 16px; }
+.chat-hint { padding: 8px 10px; margin-top: 8px; color: #92400e; background: #fef3c7; border-radius: 8px; font-size: 11px; line-height: 1.5; }
+.context-item.wide { grid-template-columns: 22px 1fr; }
+.context-item.danger .context-label { color: #b91c1c; }
+
+/* ── 时间轴剪辑 ───────────────────────────────────── */
+.timeline-shell { background: #fff; border-top: 1px solid #e5e7eb; }
+.dark .timeline-shell { background: #1d232c; border-color: #303846; }
+.timeline-header { display: flex; align-items: center; gap: 14px; height: 38px; padding: 0 17px; font-size: 13px; font-weight: 700; }
+.timeline-header .small-button { margin-left: auto; }
+.timeline-editor { display: flex; flex-direction: column; border-top: 1px solid #eef2f6; }
+.dark .timeline-editor { border-color: #303846; }
+.timeline-toolbar { display: flex; align-items: center; gap: 7px; padding: 7px 14px; overflow-x: auto; border-bottom: 1px solid #eef2f6; }
+.dark .timeline-toolbar { border-color: #303846; }
+.timeline-toolbar .small-button { white-space: nowrap; padding: 5px 9px; color: #475569; background: #f1f5f9; border-radius: 6px; font-size: 11px; }
+.dark .timeline-toolbar .small-button { color: #cbd5e1; background: #2b3441; }
+.timeline-toolbar .small-button:hover { background: #e0e7ff; color: #4338ca; }
+.timeline-toolbar .primary-button.small { padding: 6px 12px; font-size: 11px; margin-left: auto; }
+.timeline-toolbar select, .timeline-toolbar .crf-input { padding: 4px 6px; color: inherit; border: 1px solid #e2e8f0; border-radius: 6px; background: transparent; font-size: 11px; }
+.timeline-toolbar .crf-input { width: 54px; }
+.dark .timeline-toolbar select, .dark .timeline-toolbar .crf-input { border-color: #475569; }
+.timeline-toolbar input[type="range"] { width: 90px; }
+.timecode { padding: 3px 9px; color: #4338ca; background: #eef2ff; border-radius: 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.dark .timecode { background: #2b3441; color: #c7d2fe; }
+.timeline-main { display: flex; height: 216px; }
+.timeline-preview { flex: 0 0 300px; display: grid; place-items: center; background: #0f172a; }
+.timeline-preview video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.preview-empty { padding: 12px; color: #64748b; font-size: 11px; text-align: center; }
+.timeline-tracks { position: relative; flex: 1; overflow-x: auto; overflow-y: hidden; padding: 22px 0 8px; }
+.timeline-ruler { position: relative; height: 20px; margin-bottom: 4px; cursor: crosshair; }
+.timeline-ruler .tick { position: absolute; top: 0; padding-left: 4px; color: #94a3b8; border-left: 1px solid #e2e8f0; font-size: 10px; font-variant-numeric: tabular-nums; }
+.dark .timeline-ruler .tick { border-color: #303846; }
+.timeline-track { position: relative; height: 54px; margin-bottom: 6px; background: #f8fafc; border-radius: 6px; }
+.dark .timeline-track { background: #18202a; }
+.timeline-track.overlay-track { height: 40px; opacity: .75; }
+.track-line { position: relative; height: 100%; }
+.track-hint { position: absolute; top: 50%; left: 14px; transform: translateY(-50%); color: #94a3b8; font-size: 11px; pointer-events: none; }
+.timeline-clip { position: absolute; top: 4px; bottom: 4px; display: flex; align-items: center; gap: 6px; overflow: hidden; padding: 0 8px; color: #fff; background: linear-gradient(180deg, #6366f1, #4f46e5); border: 1px solid #4338ca; border-radius: 6px; cursor: grab; user-select: none; }
+.timeline-clip.selected { outline: 2px solid #f59e0b; outline-offset: 1px; }
+.timeline-clip.mode-trim { background: linear-gradient(180deg, #0ea5e9, #0284c7); border-color: #0369a1; }
+.clip-thumb { width: 34px; height: 34px; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
+.clip-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
+.clip-badge { margin-left: auto; padding: 1px 5px; background: #ffffff33; border-radius: 4px; font-size: 10px; white-space: nowrap; }
+.clip-edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+.clip-edge.left { left: 0; background: #ffffff2e; }
+.clip-edge.right { right: 0; background: #ffffff2e; }
+.clip-edge:hover { background: #fde04799; }
+.playhead { position: absolute; top: 18px; bottom: 4px; width: 2px; background: #ef4444; pointer-events: none; }
+.speed-badge { position: absolute; top: 0; transform: translateX(-50%); padding: 2px 7px; color: #fff; background: #ef4444; border-radius: 5px; font-size: 11px; white-space: nowrap; }
+.clip-inspector { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 14px; border-top: 1px solid #eef2f6; font-size: 11px; color: #475569; }
+.dark .clip-inspector { border-color: #303846; color: #cbd5e1; }
+.clip-inspector label { display: flex; align-items: center; gap: 6px; }
+.clip-inspector input, .clip-inspector select { padding: 4px 6px; color: inherit; border: 1px solid #e2e8f0; border-radius: 6px; background: transparent; }
+.dark .clip-inspector input, .dark .clip-inspector select { border-color: #475569; }
+.clip-inspector input { width: 70px; }
+
+
+

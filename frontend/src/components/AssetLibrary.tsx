@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Asset, AssetGroup, ToolStatus } from '@canvora/shared';
 import { assetFileUrl, assetThumbUrl } from '../api/client';
 
@@ -36,7 +36,6 @@ export function AssetLibrary({ assets, groups, root, tools, onImport, onAddToCan
   const [groupFilter, setGroupFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
-  const draggedRef = useRef<string | null>(null);
 
   const visible = useMemo(() => assets.filter((asset) => {
     if (filter !== 'all' && asset.kind !== filter) return false;
@@ -117,8 +116,8 @@ export function AssetLibrary({ assets, groups, root, tools, onImport, onAddToCan
             className={`asset-card ${selected.includes(asset.id) ? 'picked' : ''}`}
             key={asset.id}
             draggable
-            onDragStart={() => { draggedRef.current = asset.id; }}
-            onDragEnd={() => { draggedRef.current = null; }}
+            // 必须把素材 id 放进 dataTransfer：画布和时间轴都是从这个字段读的
+            onDragStart={(event) => { event.dataTransfer.setData('application/x-canvora-asset', asset.id); event.dataTransfer.effectAllowed = 'copy'; }}
             onDoubleClick={() => onAddToCanvas(asset)}
             title={`${asset.originalName} —— 拖到画布或双击加入画布`}
           >

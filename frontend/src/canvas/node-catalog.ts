@@ -32,6 +32,7 @@ export const NODE_CATALOG: CatalogGroup[] = [
     title: '本地处理',
     entries: [
       { kind: 'extractFrame', label: '抽帧', icon: '⧉', hint: '从视频抽取首帧 / 尾帧' },
+      { kind: 'splitImage', label: '图片分割', icon: '⊞', hint: '按 2×2、3×3 等切成多块' },
       { kind: 'upscale', label: '放大', icon: '⤢', hint: 'Real-ESRGAN 放大图片或视频' },
       { kind: 'interpolate', label: '补帧', icon: '⧗', hint: 'RIFE 把帧率补上去' },
     ],
@@ -40,5 +41,11 @@ export const NODE_CATALOG: CatalogGroup[] = [
 
 export const NODE_LABELS: Record<NodeKind, string> = {
   prompt: '提示词', text: '文本', note: '便利贴', image: '图片', video: '视频', audio: '音频',
-  generateImage: '生图', generateVideo: '生视频', llm: 'AI 文本', upscale: '放大', interpolate: '补帧', extractFrame: '抽帧',
+  generateImage: '生图', generateVideo: '生视频', llm: 'AI 文本', upscale: '放大', interpolate: '补帧',
+  extractFrame: '抽帧', splitImage: '图片分割', group: '分组',
 };
+
+/** 按 kind 快速查菜单项，拖线到空白处要用它来生成「下一步能做什么」。 */
+export const CATALOG_BY_KIND: Record<string, CatalogEntry> = Object.fromEntries(
+  NODE_CATALOG.flatMap((group) => group.entries).map((entry) => [entry.kind, entry]),
+);

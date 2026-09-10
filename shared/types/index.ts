@@ -1,10 +1,13 @@
-export type NodeKind = 'prompt' | 'text' | 'image' | 'video' | 'audio' | 'generateImage' | 'generateVideo' | 'llm' | 'upscale' | 'interpolate' | 'extractFrame' | 'note';
+export type NodeKind = 'prompt' | 'text' | 'image' | 'video' | 'audio' | 'generateImage' | 'generateVideo' | 'llm' | 'upscale' | 'interpolate' | 'extractFrame' | 'splitImage' | 'group' | 'note';
 export type PortKind = 'text' | 'image' | 'video' | 'audio' | 'any';
 
 export interface CanvasViewport { x: number; y: number; zoom: number }
 export interface Project { id: string; name: string; createdAt: number; updatedAt: number; viewport: CanvasViewport }
 export interface CanvasNode { id: string; projectId: string; kind: NodeKind; x: number; y: number; width: number; height: number; title: string; data: Record<string, unknown>; createdAt: number; updatedAt: number }
 export interface Edge { id: string; projectId: string; fromNodeId: string; fromPortId: string; toNodeId: string; toPortId: string; kind: PortKind; createdAt: number }
+
+/** 画布上的打组框：只记录成员 id，位置和大小由成员自动算出来。 */
+export interface NodeGroup { id: string; projectId: string; title: string; color: string; collapsed: boolean; memberIds: string[] }
 export interface HealthResponse { ok: true; service: 'canvora-backend'; version: string; timestamp: string }
 export interface ApiError { message: string; detail?: string }
 
@@ -35,20 +38,20 @@ export interface Asset extends AssetMetadata {
   /** 素材分组，null 表示未分组。 */
   groupId?: string | null;
   /** 产生方式，用于素材库筛选。 */
-  source?: 'imported' | 'exportedFrame' | 'upscaled' | 'interpolated';
+  source?: 'imported' | 'exportedFrame' | 'upscaled' | 'interpolated' | 'split' | 'exported';
 }
 
 export interface AssetGroup { id: string; projectId: string; name: string; createdAt: number }
 
-/** 一个项目的画布内容（节点和连线）。 */
-export interface CanvasSnapshot { nodes: CanvasNode[]; edges: Edge[] }
+/** 一个项目的画布内容（节点、连线、画布内打组）。 */
+export interface CanvasSnapshot { nodes: CanvasNode[]; edges: Edge[]; nodeGroups?: NodeGroup[] }
 
 export interface WorkspaceState { root: string; projects: Project[]; assets: Asset[]; groups?: AssetGroup[]; canvases?: Record<string, CanvasSnapshot> }
 
 /** 连线尝试的结果，用于界面给出中文提示。 */
 export type ConnectResult = 'ok' | 'self' | 'cycle' | 'duplicate' | 'replaced';
 
-export type JobKind = 'exportFrames' | 'upscaleImage' | 'upscaleVideo' | 'interpolateVideo';
+export type JobKind = 'exportFrames' | 'upscaleImage' | 'upscaleVideo' | 'interpolateVideo' | 'splitImage' | 'exportTimeline';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface Job {

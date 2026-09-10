@@ -5,43 +5,80 @@ import { getChatStatus, saveChatKey, sendChat, testChatKey } from '../api/client
 
 interface Props {
   root: string;
-  /** 当前画布上选中的提示词节点的文本，可以一键填入输入框。 */
   promptDraft?: string;
   onInsertToCanvas?: (text: string) => void;
 }
 
-interface Bubble extends ChatMessage { id: string; error?: boolean }
+interface Attachment { id: string; name: string; dataUrl: string }
+interface Bubble extends ChatMessage { id: string; error?: boolean; images?: string[] }
 
 const SYSTEM_PROMPT = '你是 Canvora 里的创作助手。用户在做 AI 短片、动画和社交平台素材。回答用简体中文，简短直接，能给出可直接使用的提示词或文案。';
+const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 
 export function ChatPanel({ root, promptDraft, onInsertToCanvas }: Props) {
   const [status, setStatus] = useState<ChatStatus | null>(null);
   const [messages, setMessages] = useState<Bubble[]>([]);
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   const [keyDraft, setKeyDraft] = useState('');
   const [keyMessage, setKeyMessage] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const [visionHint, setVisionHint] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
 
   const refreshStatus = () => { void getChatStatus(root).then(setStatus).catch(() => setStatus(null)); };
   useEffect(refreshStatus, [root]);
   useEffect(() => { listRef.current?.scrollTo({ top: listRef.current.scrollHeight }); }, [messages, sending]);
 
+  const attachImages = async (files: File[]) => {
+    const accepted: Attachment[] = [];
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) { setVisionHint(`「${file.name}」不是图片，已跳过`); continue; }
+      if (file.size > MAX_ATTACHMENT_BYTES) { setVisionHint(`「${file.name}」超过 4MB，请先压缩再用`); continue; }
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('读取图片失败'));
+        reader.readAsDataURL(file);
+      });
+      accepted.push({ id: crypto.randomUUID(), name: file.name, dataUrl });
+    }
+    if (accepted.length) setAttachments((list) => [...list, ...accepted]);
+  };
+
   const send = async () => {
     const text = draft.trim();
-    if (!text || sending) return;
-    const next: Bubble[] = [...messages, { id: crypto.randomUUID(), role: 'user', content: text }];
+    if ((!text && !attachments.length) || sending) return;
+    const images = attachments.map((item) => item.dataUrl);
+    const next: Bubble[] = [...messages, { id: crypto.randomUUID(), role: 'user', content: text || '（图片）', images }];
     setMessages(next);
     setDraft('');
+    setAttachments([]);
     setSending(true);
+    setVisionHint('');
     try {
-      const payload: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }, ...next.map(({ role, content }) => ({ role, content }))];
-      const reply = await sendChat(payload, undefined, root);
-      setMessages((list) => [...list, { id: crypto.randomUUID(), role: 'assistant', content: reply.content }]);
+      // 有图片时按 OpenAI 兼容的多模态格式发送。DeepSeek 目前不读图，
+      // 后端会返回空内容，这里明确告知并退回纯文字，不假装读到了图。
+      const content: ChatMessage['content'] | Array<Record<string, unknown>> = images.length
+        ? [
+          ...(text ? [{ type: 'text', text }] : []),
+          ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+        ]
+        : text;
+      const payload = [{ role: 'system' as const, content: SYSTEM_PROMPT }, ...next.map((item, index) => ({ role: item.role, content: index === next.length - 1 ? content : item.content }))] as ChatMessage[];
+      let reply = await sendChat(payload, undefined, root);
+      if (images.length && !reply.content.trim()) {
+        setVisionHint('当前 DeepSeek 模型不能读图（接口返回空内容），已改为只按文字回答。要读图请换支持视觉的模型或在提示词里描述画面。');
+        reply = await sendChat([{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: text || '（我上传了一张图片，但当前模型无法读取，请告诉我需要补充哪些文字描述。）' }], undefined, root);
+      }
+      setMessages((list) => [...list, { id: crypto.randomUUID(), role: 'assistant', content: reply.content, images: reply.content ? undefined : [] }]);
       refreshStatus();
     } catch (error) {
-      setMessages((list) => [...list, { id: crypto.randomUUID(), role: 'assistant', content: error instanceof Error ? error.message : '发送失败', error: true }]);
+      const message = error instanceof Error ? error.message : '发送失败';
+      if (images.length) setVisionHint(message);
+      else setMessages((list) => [...list, { id: crypto.randomUUID(), role: 'assistant', content: message, error: true }]);
     } finally {
       setSending(false);
     }
@@ -93,23 +130,40 @@ export function ChatPanel({ root, promptDraft, onInsertToCanvas }: Props) {
     </div>}
 
     <div className="chat-list" ref={listRef}>
-      {messages.length === 0 && <p className="muted chat-empty">问它点什么，比如「帮我把『一只猫坐在窗边』扩写成一段电影感提示词」。</p>}
+      {messages.length === 0 && <p className="muted chat-empty">问它点什么，比如「帮我把『一只猫坐在窗边』扩写成一段电影感提示词」。也可以直接把图片拖到下面。</p>}
       {messages.map((message) => <div key={message.id} className={`bubble ${message.role} ${message.error ? 'error' : ''}`}>
+        {message.images?.length ? <div className="bubble-images">{message.images.map((src, index) => <img key={index} src={src} alt="附件" />)}</div> : null}
         <div className="bubble-text">{message.content}</div>
         {message.role === 'assistant' && !message.error && onInsertToCanvas && <button className="link-button" onClick={() => onInsertToCanvas(message.content)}>填入画布提示词节点</button>}
       </div>)}
       {sending && <div className="bubble assistant"><div className="bubble-text muted">正在思考…</div></div>}
     </div>
 
+    {visionHint && <div className="chat-hint">{visionHint}</div>}
+
     <div className="chat-input">
       {promptDraft && <button className="link-button" onClick={() => setDraft(promptDraft)}>填入画布上选中的提示词</button>}
+      {attachments.length > 0 && <div className="attach-strip">
+        {attachments.map((item) => <span className="attach-chip" key={item.id}>
+          <img src={item.dataUrl} alt={item.name} />
+          <button onClick={() => setAttachments((list) => list.filter((entry) => entry.id !== item.id))}>×</button>
+        </span>)}
+      </div>}
       <textarea
         value={draft}
-        placeholder="输入消息，Ctrl+Enter 发送"
+        placeholder="输入消息，Ctrl+Enter 发送；图片可以直接拖到这里或点下面的「图片」"
         onChange={(event) => setDraft(event.target.value)}
+        onPaste={(event) => { const files = Array.from(event.clipboardData.files); if (files.length) void attachImages(files); }}
+        onDrop={(event) => { event.preventDefault(); const files = Array.from(event.dataTransfer.files); if (files.length) void attachImages(files); }}
+        onDragOver={(event) => event.preventDefault()}
         onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(); } }}
       />
-      <button className="primary-button" disabled={sending || !draft.trim()} onClick={() => void send()}>{sending ? '发送中…' : '发送'}</button>
+      <div className="chat-actions">
+        <button className="small-button" onClick={() => imageInput.current?.click()}>图片</button>
+        <span className="muted tiny">图片只用于本次对话，不会上传到任何第三方（除你配置的接口）</span>
+        <button className="primary-button" disabled={sending || (!draft.trim() && !attachments.length)} onClick={() => void send()}>{sending ? '发送中…' : '发送'}</button>
+      </div>
     </div>
+    <input ref={imageInput} hidden type="file" accept="image/*" multiple onChange={(event) => { if (event.target.files?.length) void attachImages(Array.from(event.target.files)); event.target.value = ''; }} />
   </div>;
 }

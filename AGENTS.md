@@ -143,7 +143,7 @@ node scripts/fetch-tools.mjs
 - **ffmpeg 的滤镜图一律写入临时文件，用 `-filter_complex_script` 传**，不从命令行拼。多片段时滤镜文本会超过 8KB，且能避开 Windows 转义地狱。
 - **取消任务时必须杀整个进程树**（Windows 用 `taskkill /F /T /PID`）。只 kill 直接子进程会留下残余进程继续吃 CPU/显存。
 - **Windows 上路径含空格或中文是常态。** 素材存进 `assets/` 时重命名为 `<assetId>.<ext>`，原始文件名存数据库。
-- **ffmpeg 滤镜里的 LUT 路径必须用正斜杠**（`file=C:/Canvora/luts/x.cube`）。反斜杠是 ffmpeg 滤镜语法里的转义字符，会导致**静默失败**。
+- **ffmpeg 滤镜里的 LUT 路径必须写成 `file='C\:/Canvora/luts/x.cube'`**：反斜杠是 ffmpeg 滤镜语法里的转义字符（会静默失败），而只把反斜杠换成正斜杠也不够——盘符后的冒号会被滤镜选项解析器当成选项分隔符，报 `No option name near '...'` 直接失败。所以既要正斜杠，又要转义冒号 `\:`，并整体加单引号（实测 ffmpeg 7.1，见 `lut3dFileArg()`）。
 - **`between(t\,3\,8)` 里的逗号必须转义为 `\,`**，走 `-filter_complex_script` 也一样要转义。
 
 ### 4.7 不要在脚本里用 `wmic`
