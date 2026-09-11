@@ -1,7 +1,8 @@
 import { memo, useCallback, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
-import type { Asset, CanvasNode, PortKind } from '@canvora/shared';
-import { assetFileUrl, assetThumbUrl, generateImage, generateVideo } from '../api/client';
+import type { Asset, CanvasNode, PortKind, Provider } from '@canvora/shared';
+import { assetFileUrl, assetThumbUrl } from '../api/client';
+import { IMAGE_COUNTS, IMAGE_SIZES, VIDEO_ASPECTS, VIDEO_DURATIONS, modelSupports, resolveGenerationTarget } from './generation-options';
 import { KIND_LABELS, PORT_COLORS, PORT_ROW_HEIGHT, nodeSpec } from './ports';
 
 /** 同一时刻只允许一个视频节点在播放（16GB 内存机器上的硬约束）。 */
@@ -12,6 +13,7 @@ interface Props {
   zoom: number;
   root: string;
   assets: Map<string, Asset>;
+  providers: Provider[];
   selected: boolean;
   connectingKind: PortKind | null;
   onSelect: (id: string, additive: boolean) => void;
@@ -20,11 +22,12 @@ interface Props {
   onUpdateData: (id: string, patch: Record<string, unknown>) => void;
   onStartConnect: (nodeId: string, portId: string, kind: PortKind, index: number) => void;
   onContextMenu: (nodeId: string, clientX: number, clientY: number) => void;
+  onRunGeneration: (nodeId: string) => void;
 }
 
 const SPLIT_PRESETS = ['2x2', '3x3', '1x2', '2x1', '1x3', '3x1', '4x4'];
 
-export const CanvasNodeView = memo(function CanvasNodeView({ node, zoom, root, assets, selected, connectingKind, onSelect, onDragBy, onUpdateData, onStartConnect, onContextMenu }: Props) {
+export const CanvasNodeView = memo(function CanvasNodeView({ node, zoom, root, assets, providers, selected, connectingKind, onSelect, onDragBy, onUpdateData, onStartConnect, onContextMenu, onRunGeneration }: Props) {
   const drag = useRef<{ clientX: number; clientY: number; moved: boolean } | null>(null);
   const spec = nodeSpec(node.kind);
   const assetId = typeof node.data.assetId === 'string' ? node.data.assetId : null;
@@ -124,22 +127,70 @@ export const CanvasNodeView = memo(function CanvasNodeView({ node, zoom, root, a
       </div>;
     }
     if (node.kind === 'generateImage' || node.kind === 'generateVideo') {
-      const isVideo = node.kind === 'generateVideo';
-      const providerId = String(node.data.providerId ?? '');
-      const model = String(node.data.model ?? '');
-      const prompt = String(node.data.prompt ?? node.data.text ?? '');
-      return <div className="node-params" onPointerDown={(event) => event.stopPropagation()}>
-        <input value={providerId} placeholder="服务商 ID" onChange={(event) => onUpdateData(node.id, { providerId: event.target.value })} />
-        <input value={model} placeholder="模型 ID" onChange={(event) => onUpdateData(node.id, { model: event.target.value })} />
-        <textarea value={prompt} placeholder="写下提示词…" onChange={(event) => onUpdateData(node.id, { prompt: event.target.value })} />
-        <button className="primary-button" onClick={() => {
-          const input = { root, projectId: node.projectId, providerId, model, prompt };
-          void (isVideo ? generateVideo(input) : generateImage(input)).then((result) => {
-            if (result.assetIds?.[0]) onUpdateData(node.id, { assetId: result.assetIds[0], status: 'succeeded' });
-            else if (result.taskId) onUpdateData(node.id, { taskId: result.taskId, status: 'queued' });
-          }).catch((error: unknown) => onUpdateData(node.id, { status: 'failed', error: error instanceof Error ? error.message : '生成失败' }));
-        }}>运行</button>
-        {node.data.status === 'failed' && <small className="muted">{String(node.data.error ?? '生成失败')}</small>}
+      const kind: 'image' | 'video' = node.kind === 'generateVideo' ? 'video' : 'image';
+      const isVideo = kind === 'video';
+      const prompt = String(node.data.prompt ?? '');
+      const target = resolveGenerationTarget(providers, kind, String(node.data.providerId ?? ''), String(node.data.model ?? ''));
+      const status = String(node.data.status ?? 'idle');
+      const running = status === 'running' || status === 'queued';
+      const size = String(node.data.size ?? IMAGE_SIZES[0]);
+      const count = String(node.data.count ?? '1');
+      const aspect = String(node.data.aspect ?? VIDEO_ASPECTS[0]);
+      const duration = String(node.data.duration ?? VIDEO_DURATIONS[0]);
+
+      if (!target) {
+        return <div className="node-placeholder">
+          <span>还没有可用的服务商</span>
+          <small>请到后端管理页 <code>http://127.0.0.1:8787</code> 添加服务商和密钥</small>
+        </div>;
+      }
+
+      return <div className="node-params gen-form" onPointerDown={(event) => event.stopPropagation()}>
+        <label className="param-row">模型
+          <select
+            value={`${target.provider.id}|${target.model.id}`}
+            onChange={(event) => {
+              const [providerId, model] = event.target.value.split('|');
+              onUpdateData(node.id, { providerId, model });
+            }}
+          >
+            {providers.filter((provider) => provider.enabled).flatMap((provider) => provider.models
+              .filter((model) => modelSupports(model, kind))
+              .map((model) => <option key={`${provider.id}|${model.id}`} value={`${provider.id}|${model.id}`}>{provider.name} · {model.displayName}</option>))}
+          </select>
+        </label>
+        {isVideo
+          ? <>
+            <label className="param-row">比例
+              <select value={aspect} onChange={(event) => onUpdateData(node.id, { aspect: event.target.value })}>
+                {VIDEO_ASPECTS.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <label className="param-row">时长
+              <select value={duration} onChange={(event) => onUpdateData(node.id, { duration: event.target.value })}>
+                {VIDEO_DURATIONS.map((value) => <option key={value} value={value}>{value} 秒</option>)}
+              </select>
+            </label>
+          </>
+          : <>
+            <label className="param-row">尺寸
+              <select value={size} onChange={(event) => onUpdateData(node.id, { size: event.target.value })}>
+                {IMAGE_SIZES.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <label className="param-row">张数
+              <select value={count} onChange={(event) => onUpdateData(node.id, { count: event.target.value })}>
+                {IMAGE_COUNTS.map((value) => <option key={value} value={value}>{value} 张</option>)}
+              </select>
+            </label>
+          </>}
+        <textarea value={prompt} placeholder="描述你想要的画面…" onChange={(event) => onUpdateData(node.id, { prompt: event.target.value })} />
+        <button className="primary-button" disabled={running || !prompt.trim()} onClick={() => onRunGeneration(node.id)}>
+          {running ? (isVideo ? '正在生成视频…' : '正在生成图片…') : (isVideo ? '生成视频' : '生成图片')}
+        </button>
+        {status === 'failed' && <small className="muted tiny">{String(node.data.error ?? '生成失败')}</small>}
+        {status === 'queued' && <small className="muted tiny">已提交，去任务中心看进度</small>}
+        <small className="muted tiny">参考图、首帧、尾帧可以通过左侧输入口连线接入</small>
       </div>;
     }
     return <div className="node-placeholder"><span>等待输入</span></div>;
@@ -156,14 +207,20 @@ export const CanvasNodeView = memo(function CanvasNodeView({ node, zoom, root, a
   return <div
     className={`canvas-node ${selected ? 'selected' : ''}`}
     style={{ left: node.x, top: node.y, width: node.width }}
-    // 图片/视频节点可以直接拖到下方时间轴轨道成为剪辑片段
-    draggable={Boolean(assetId)}
-    onDragStart={(event) => { if (assetId) { event.dataTransfer.setData('application/x-canvora-asset', assetId); event.dataTransfer.effectAllowed = 'copy'; } }}
+    // 整个节点不能设为 draggable：那会和标题栏的指针拖动抢事件，表现成"移动变复制"。
+    // 拖到时间轴由下面独立的把手负责。
     onPointerDown={(event) => { event.stopPropagation(); onSelect(node.id, event.shiftKey); }}
     onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onContextMenu(node.id, event.clientX, event.clientY); }}
   >
     <div className="node-header" onPointerDown={onHeaderPointerDown} onPointerMove={onHeaderPointerMove} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
       <span className="node-title">{node.title}</span>
+      {assetId && <span
+        className="drag-to-timeline"
+        title="按住拖到下方时间轴，把这个素材加进剪辑轨道"
+        draggable
+        onDragStart={(event) => { event.dataTransfer.setData('application/x-canvora-asset', assetId); event.dataTransfer.effectAllowed = 'copy'; }}
+        onPointerDown={(event) => event.stopPropagation()}
+      >⇱ 时间轴</span>}
       <span className="drag-handle" title="按住标题栏拖动">⠿</span>
     </div>
     {rows > 0 && <div className="node-ports">

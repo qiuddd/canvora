@@ -6,7 +6,7 @@ interface CanvasState {
   edges: Edge[];
   nodeGroups: NodeGroup[];
   selectedNodeIds: string[];
-  addNode: (kind: NodeKind, position?: { x: number; y: number }, data?: Record<string, unknown>) => string;
+  addNode: (kind: NodeKind, position?: { x: number; y: number }, data?: Record<string, unknown>, projectId?: string) => string;
   moveNodes: (ids: string[], delta: { x: number; y: number }) => void;
   updateNodeData: (id: string, patch: Record<string, unknown>) => void;
   setSelection: (ids: string[]) => void;
@@ -44,12 +44,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   nodeGroups: [],
   selectedNodeIds: [],
 
-  addNode: (kind, position, data) => {
+  addNode: (kind, position, data, projectId = 'local') => {
     const state = get();
     const now = Date.now();
     const id = crypto.randomUUID();
     const node: CanvasNode = {
-      id, projectId: 'local', kind,
+      id, projectId, kind,
       // 按网格排布，避免新节点盖住已有节点的端口
       x: position?.x ?? 140 + (state.nodes.length % 3) * 320,
       y: position?.y ?? 80 + Math.floor(state.nodes.length / 3) * 300,

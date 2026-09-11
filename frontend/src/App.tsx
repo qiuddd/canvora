@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, PointerEvent as ReactPointerEvent, WheelEvent } from 'react';
-import type { Asset, Job, NodeKind, PortKind, Project, ToolStatus, WorkspaceState } from '@canvora/shared';
+import type { Asset, GenerationTask, Job, NodeKind, PortKind, Project, Provider, ToolStatus, WorkspaceState } from '@canvora/shared';
 import {
   assignGroup, createGroup, createProject, deleteAsset, deleteProject,
-  enqueueJob, getCanvas, getTools, getWorkspace, listJobs, removeGroup, renameProject, saveCanvas, uploadAsset,
+  enqueueJob, generateImage, generateVideo, getCanvas, getTools, getWorkspace, listGenerationTasks, listJobs, listProviders, removeGroup, renameProject, saveCanvas, uploadAsset,
 } from './api/client';
 import { AssetLibrary, type BatchKind } from './components/AssetLibrary';
 import { CanvasContextMenu, type MenuRequest } from './components/CanvasContextMenu';
@@ -12,6 +12,7 @@ import { JobsPanel } from './components/JobsPanel';
 import { ProjectGate } from './components/ProjectGate';
 import { CanvasNodeView } from './canvas/CanvasNodeView';
 import { KIND_LABELS, PORT_COLORS, compatibleKinds, findInput, nodeSpec, portCenterY, portsCompatible } from './canvas/ports';
+import { buildGenerationParams, resolveGenerationTarget } from './canvas/generation-options';
 import { TimelinePanel } from './components/TimelinePanel';
 import { useCanvasStore } from './stores/canvas-store';
 import { emptyTimeline, useTimelineStore } from './stores/timeline-store';
@@ -33,6 +34,9 @@ export function App() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [tools, setTools] = useState<ToolStatus | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
+  // 服务商和密钥只在后端配置，前端只拿到可选项，永远不持有明文密钥。
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [generationTasks, setGenerationTasks] = useState<GenerationTask[]>([]);
   const [fatal, setFatal] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState('');
@@ -53,6 +57,9 @@ export function App() {
   const panStart = useRef<{ clientX: number; clientY: number; panX: number; panY: number } | null>(null);
   const boxStart = useRef<{ x: number; y: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  /** 已经放回画布的结果素材，避免轮询重复建节点。 */
+  const placedAssetsRef = useRef<Set<string>>(new Set());
+  const nodeMapRef = useRef<Map<string, import('@canvora/shared').CanvasNode>>(new Map());
 
   const nodes = useCanvasStore((state) => state.nodes);
   const edges = useCanvasStore((state) => state.edges);
@@ -78,6 +85,7 @@ export function App() {
   const projectAssets = useMemo(() => (workspace?.assets ?? []).filter((asset) => asset.projectId === activeProjectId), [workspace, activeProjectId]);
   const projectGroups = useMemo(() => (workspace?.groups ?? []).filter((group) => group.projectId === activeProjectId), [workspace, activeProjectId]);
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  nodeMapRef.current = nodeMap;
   const assetMap = useMemo(() => new Map(projectAssets.map((asset) => [asset.id, asset])), [projectAssets]);
   const selectedPromptText = useMemo(() => {
     const node = nodes.find((item) => selectedNodeIds.includes(item.id));
@@ -106,12 +114,22 @@ export function App() {
   }, []);
 
   const refreshJobs = useCallback(() => { void listJobs(root || undefined).then(setJobs).catch(() => undefined); }, [root]);
+  const refreshProviders = useCallback(() => { void listProviders(root || undefined).then(setProviders).catch(() => undefined); }, [root]);
+  const refreshGenerationTasks = useCallback(() => {
+    void listGenerationTasks(root || undefined).then((tasks) => {
+      setGenerationTasks(tasks.filter((task) => task.engine === 'cloud'));
+    }).catch(() => undefined);
+  }, [root]);
 
-  /** 启动时恢复上次打开的项目。定义必须在用到它的 effect 之前，否则会踩暂时性死区。 */
+  /** 旧快照里的节点 projectId 可能是 'local'，进项目时统一归到当前项目，否则生成结果会写错目录。 */
   const openProjectWith = useCallback(async (state: WorkspaceState, projectId: string) => {
     try {
       const snapshot = await getCanvas(projectId, state.root);
-      replaceAll(snapshot);
+      replaceAll({
+        nodes: snapshot.nodes.map((node) => ({ ...node, projectId })),
+        edges: snapshot.edges.map((edge) => ({ ...edge, projectId })),
+        nodeGroups: (snapshot.nodeGroups ?? []).map((group) => ({ ...group, projectId })),
+      });
       setActiveProjectId(projectId);
     } catch {
       // 恢复失败就停在项目列表，不影响使用
@@ -122,6 +140,7 @@ export function App() {
     void reloadWorkspace().then((state) => {
       if (!state) return;
       void getTools(state.root).then(setTools).catch(() => setTools(null));
+      void listProviders(state.root).then(setProviders).catch(() => setProviders([]));
       const last = window.localStorage.getItem('canvora:lastProject');
       if (last && state.projects.some((project) => project.id === last)) void openProjectWith(state, last);
     });
@@ -133,7 +152,15 @@ export function App() {
     resetTimeline(emptyTimeline(activeProjectId));
   }, [activeProjectId, resetTimeline]);
 
-  useEffect(() => { if (activeProjectId) refreshJobs(); }, [activeProjectId, refreshJobs]);
+  useEffect(() => { if (activeProjectId) { refreshJobs(); refreshProviders(); refreshGenerationTasks(); } }, [activeProjectId, refreshJobs, refreshProviders, refreshGenerationTasks]);
+
+  // 云端视频任务是异步的：轮询到完成就把结果素材放回画布，并刷新素材库。
+  useEffect(() => {
+    if (!generationTasks.some((task) => task.status === 'queued' || task.status === 'running')) return;
+    const timer = setInterval(() => { refreshGenerationTasks(); }, 2500);
+    return () => clearInterval(timer);
+  }, [generationTasks, refreshGenerationTasks]);
+
   useEffect(() => {
     if (!jobs.some((job) => job.status === 'queued' || job.status === 'running')) return;
     const timer = setInterval(() => {
@@ -162,7 +189,11 @@ export function App() {
     setBusy('正在打开项目…');
     try {
       const snapshot = await getCanvas(projectId, root || undefined);
-      replaceAll(snapshot);
+      replaceAll({
+        nodes: snapshot.nodes.map((node) => ({ ...node, projectId })),
+        edges: snapshot.edges.map((edge) => ({ ...edge, projectId })),
+        nodeGroups: (snapshot.nodeGroups ?? []).map((group) => ({ ...group, projectId })),
+      });
       setActiveProjectId(projectId);
       window.localStorage.setItem('canvora:lastProject', projectId);
       setPan({ x: 0, y: 0 });
@@ -215,7 +246,7 @@ export function App() {
   const addAssetToCanvas = useCallback((asset: Asset, position?: { x: number; y: number }) => {
     if (!activeProjectId) { setNotice('请先新建或打开一个项目'); return; }
     const kind: NodeKind = asset.kind === 'audio' ? 'audio' : asset.kind;
-    addNode(kind, position, { assetId: asset.id });
+    addNode(kind, position, { assetId: asset.id }, activeProjectId);
   }, [activeProjectId, addNode]);
 
   const importFiles = useCallback(async (files: File[], dropPoint?: { x: number; y: number }) => {
@@ -227,7 +258,7 @@ export function App() {
         const asset = await uploadAsset(root, activeProjectId, file, (percent) => setBusy(`正在导入 ${file.name}（${percent}%）`));
         setWorkspace((state) => state ? { ...state, assets: [...state.assets.filter((item) => item.id !== asset.id), asset] } : state);
         const kind: NodeKind = asset.kind === 'audio' ? 'audio' : asset.kind;
-        addNode(kind, dropPoint ? { x: dropPoint.x + index * 28, y: dropPoint.y + index * 28 } : undefined, { assetId: asset.id });
+        addNode(kind, dropPoint ? { x: dropPoint.x + index * 28, y: dropPoint.y + index * 28 } : undefined, { assetId: asset.id }, activeProjectId);
         setNotice(`已导入「${asset.originalName}」`);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : '素材导入失败');
@@ -436,6 +467,96 @@ export function App() {
     }
   };
 
+  /** 生成结果回到画布：在生成节点下方建结果节点，并记录来源关系。 */
+  const placeGenerationResults = useCallback((sourceNodeId: string, assetIds: string[]) => {
+    if (!activeProjectId || !assetIds.length) return;
+    const source = nodeMapRef.current.get(sourceNodeId);
+    if (!source) return;
+    const resultKind: NodeKind = source.kind === 'generateVideo' ? 'video' : 'image';
+    assetIds.forEach((assetId, index) => {
+      if (placedAssetsRef.current.has(assetId)) return;
+      placedAssetsRef.current.add(assetId);
+      addNode(resultKind, {
+        x: source.x + index * 300,
+        y: source.y + source.height + 70,
+      }, { assetId, sourceNodeId }, activeProjectId);
+    });
+    updateNodeData(sourceNodeId, { resultAssetIds: assetIds, status: 'succeeded', error: '' });
+  }, [activeProjectId, addNode, updateNodeData]);
+
+  // 云端任务完成后把结果素材放回画布；同一个素材只放一次。
+  useEffect(() => {
+    const pending = generationTasks
+      .filter((task) => task.status === 'succeeded' && task.nodeId)
+      .filter((task) => task.resultAssetIds.some((assetId) => !placedAssetsRef.current.has(assetId)));
+    if (!pending.length) return;
+    void reloadWorkspace(root).then(() => {
+      for (const task of pending) placeGenerationResults(task.nodeId as string, task.resultAssetIds);
+    });
+  }, [generationTasks, placeGenerationResults, reloadWorkspace, root]);
+
+  // 云端任务失败时把错误写回发起生成的节点，用户能在画布上直接看到原因。
+  useEffect(() => {
+    for (const task of generationTasks) {
+      if (task.status !== 'failed' || !task.nodeId) continue;
+      const node = nodeMapRef.current.get(task.nodeId);
+      if (node && node.data.status !== 'failed') updateNodeData(task.nodeId, { status: 'failed', error: task.errorMessage ?? '生成失败' });
+    }
+  }, [generationTasks, updateNodeData]);
+
+  /** 云端生成：把节点参数、上游素材和提示词交给后端，结果自动回到画布。 */
+  const runGeneration = async (nodeId: string) => {
+    const node = nodeMap.get(nodeId);
+    if (!node || !activeProjectId) { setNotice('请先打开一个项目'); return; }
+    const kind: 'image' | 'video' = node.kind === 'generateVideo' ? 'video' : 'image';
+    const target = resolveGenerationTarget(providers, kind, String(node.data.providerId ?? ''), String(node.data.model ?? ''));
+    if (!target) { setNotice('还没有可用的服务商，请到后端管理页配置服务商和密钥'); return; }
+    const prompt = String(node.data.prompt ?? '').trim();
+    if (!prompt) { setNotice('先写下提示词再生成'); return; }
+
+    // 上游连进来的图片素材就是参考图/首帧/尾帧；只提交素材 id，文件由后端读取。
+    const inputs = edges.filter((edge) => edge.toNodeId === nodeId)
+      .map((edge) => ({ port: edge.toPortId, source: nodeMap.get(edge.fromNodeId) }))
+      .map((item) => ({ port: item.port, assetId: item.source ? String(item.source.data.assetId ?? '') : '' }))
+      .filter((item) => item.assetId)
+      .map((item) => {
+        const asset = assetMap.get(item.assetId);
+        const assetKind: 'image' | 'video' | 'audio' = asset?.kind === 'video' ? 'video' : asset?.kind === 'audio' ? 'audio' : 'image';
+        return { assetId: item.assetId, kind: assetKind, role: item.port };
+      });
+
+    updateNodeData(nodeId, { providerId: target.provider.id, model: target.model.id, status: 'running', error: '' });
+    try {
+      const request = {
+        root,
+        projectId: activeProjectId,
+        providerId: target.provider.id,
+        model: target.model.id,
+        prompt,
+        params: buildGenerationParams(kind, node.data),
+        inputs,
+        nodeId,
+      };
+      const result = kind === 'video' ? await generateVideo(request) : await generateImage(request);
+      if (result.assetIds?.length) {
+        await reloadWorkspace(root);
+        placeGenerationResults(nodeId, result.assetIds);
+        setNotice(kind === 'video' ? '视频已生成并放回画布' : '图片已生成并放回画布');
+      } else if (result.taskId) {
+        updateNodeData(nodeId, { taskId: result.taskId, status: 'queued', error: '' });
+        setNotice('已提交生成任务，完成后会自动回到画布');
+        refreshGenerationTasks();
+        setTab('任务');
+      } else {
+        throw new Error('服务商没有返回结果');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '生成失败';
+      updateNodeData(nodeId, { status: 'failed', error: message });
+      setNotice(message);
+    }
+  };
+
   /** 把时间轴编成 EDL 交给后端导出。 */
   const runTimelineExport = async (exportSettings: import('@canvora/shared').ExportSettings) => {
     if (!activeProjectId) { setNotice('请先打开一个项目'); return; }
@@ -601,11 +722,13 @@ export function App() {
                 zoom={zoom}
                 root={root}
                 assets={assetMap}
+                providers={providers}
                 selected={selectedNodeIds.includes(node.id)}
                 connectingKind={connecting?.kind ?? null}
                 onSelect={(id, additive) => { if (additive) toggleSelection(id); else setSelection([id]); }}
                 onDragBy={dragNodeBy}
                 onUpdateData={updateNodeData}
+                onRunGeneration={(nodeId) => void runGeneration(nodeId)}
                 onStartConnect={(nodeId, portId, kind, index) => { const gesture = { nodeId, portId, kind, index }; gestureRef.current = gesture; setConnecting(gesture); }}
                 onContextMenu={nodeContextMenu}
               />)}
@@ -632,7 +755,7 @@ export function App() {
           {tab === '对话' && <ChatPanel
             root={root}
             promptDraft={selectedPromptText}
-            onInsertToCanvas={(text) => { if (selectedNodeIds.length) { updateNodeData(selectedNodeIds[0], { text }); setNotice('已填入选中的提示词节点'); } else { const id = addNode('prompt'); updateNodeData(id, { text }); setNotice('已新建提示词节点并填入内容'); } }}
+            onInsertToCanvas={(text) => { if (selectedNodeIds.length) { updateNodeData(selectedNodeIds[0], { text }); setNotice('已填入选中的提示词节点'); } else { const id = addNode('prompt', undefined, undefined, activeProjectId ?? undefined); updateNodeData(id, { text }); setNotice('已新建提示词节点并填入内容'); } }}
           />}
           {tab === '素材' && <AssetLibrary
             assets={projectAssets}
@@ -650,7 +773,7 @@ export function App() {
             onRemoveGroup={(groupId) => { void removeGroup(groupId, root || undefined).then(() => reloadWorkspace(root || undefined)).catch((error) => setNotice(error instanceof Error ? error.message : '删除分组失败')); }}
             onBatch={(kind, assetIds) => void runBatch(kind, assetIds)}
           />}
-          {tab === '任务' && <JobsPanel jobs={jobs} root={root} onRefresh={refreshJobs} />}
+          {tab === '任务' && <JobsPanel jobs={jobs} generationTasks={generationTasks} root={root} onRefresh={() => { refreshJobs(); refreshGenerationTasks(); }} />}
         </div>
       </aside>
     </main>
@@ -676,7 +799,7 @@ export function App() {
     {menu && <CanvasContextMenu
       request={menu}
       onPick={(kind) => {
-        const id = addNode(kind, { x: menu.canvasX, y: menu.canvasY });
+        const id = addNode(kind, { x: menu.canvasX, y: menu.canvasY }, undefined, activeProjectId ?? undefined);
         if (menu.connectFrom) {
           const spec = nodeSpec(kind);
           const target = spec.inputs.find((input) => portsCompatible(menu.connectFrom!.kind, input));

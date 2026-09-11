@@ -1,5 +1,5 @@
 import type {
-  Asset, AssetGroup, CanvasSnapshot, ChatMessage, ChatReply, HealthResponse, Job, JobKind, Project, ToolStatus, WorkspaceState,
+  Asset, AssetGroup, CanvasSnapshot, ChatMessage, ChatReply, GenerationTask, HealthResponse, Job, JobKind, Project, Provider, ToolStatus, WorkspaceState,
 } from '@canvora/shared';
 
 const baseUrl = import.meta.env.VITE_API_URL ?? '/api';
@@ -115,12 +115,22 @@ export function testChatKey(apiKey?: string, root?: string): Promise<{ ok: true;
   return request(`/chat/test${root ? `?root=${encodeURIComponent(root)}` : ''}`, json('POST', { apiKey }));
 }
 
-export interface GenerationRequest { root: string; projectId: string; providerId: string; model?: string; prompt: string; params?: Record<string, unknown>; inputs?: Array<{ dataUrl?: string; assetId?: string }> }
+export interface GenerationInput { assetId?: string; kind?: 'image' | 'video' | 'audio'; role?: string }
+export interface GenerationRequest { root: string; projectId: string; providerId: string; model?: string; prompt: string; params?: Record<string, unknown>; inputs?: GenerationInput[]; nodeId?: string }
 export interface GenerationResult { kind: 'image' | 'video' | 'text'; assetIds?: string[]; content?: string; taskId?: string; status?: string }
 export function generateImage(input: GenerationRequest): Promise<GenerationResult> { return request('/generation/image', json('POST', input)); }
 export function generateVideo(input: GenerationRequest): Promise<GenerationResult> { return request('/generation/video', json('POST', input)); }
 export function generateText(input: GenerationRequest): Promise<GenerationResult> { return request('/generation/text', json('POST', input)); }
 export function cancelGeneration(id: string, root?: string): Promise<{ ok: boolean }> { return request(`/generation/${encodeURIComponent(id)}/cancel${root ? `?root=${encodeURIComponent(root)}` : ''}`, { method: 'POST' }); }
+export function listGenerationTasks(root?: string): Promise<GenerationTask[]> { return request<GenerationTask[]>(`/tasks${root ? `?root=${encodeURIComponent(root)}` : ''}`); }
+export function listProviders(root?: string): Promise<Provider[]> { return request<Provider[]>(`/providers${root ? `?root=${encodeURIComponent(root)}` : ''}`); }
+export function createProvider(input: Partial<Provider> & { apiKey?: string }, root?: string): Promise<Provider> { return request<Provider>(`/providers${root ? `?root=${encodeURIComponent(root)}` : ''}`, json('POST', input)); }
+export function updateProvider(id: string, input: Partial<Provider> & { apiKey?: string }, root?: string): Promise<Provider> { return request<Provider>(`/providers/${encodeURIComponent(id)}${root ? `?root=${encodeURIComponent(root)}` : ''}`, json('PATCH', input)); }
+export function deleteProvider(id: string, root?: string): Promise<{ ok: boolean }> { return request(`/providers/${encodeURIComponent(id)}${root ? `?root=${encodeURIComponent(root)}` : ''}`, { method: 'DELETE' }); }
+export function testProvider(id: string, apiKey?: string, root?: string): Promise<{ ok: true; message: string }> { return request(`/providers/${encodeURIComponent(id)}/test${root ? `?root=${encodeURIComponent(root)}` : ''}`, json('POST', { apiKey })); }
+export function deleteJob(id: string, root?: string): Promise<{ ok: boolean }> { return request(`/jobs/${encodeURIComponent(id)}${root ? `?root=${encodeURIComponent(root)}` : ''}`, { method: 'DELETE' }); }
+export function deleteGenerationTask(id: string, root?: string): Promise<{ ok: boolean }> { return request(`/tasks/${encodeURIComponent(id)}${root ? `?root=${encodeURIComponent(root)}` : ''}`, { method: 'DELETE' }); }
+export function updateAssetMetadata(id: string, patch: { originalName?: string; tags?: string[]; favorite?: boolean }, root?: string): Promise<Asset> { return request<Asset>(`/assets/${encodeURIComponent(id)}${root ? `?root=${encodeURIComponent(root)}` : ''}`, json('PATCH', patch)); }
 export function listProviderPresets(root?: string): Promise<Array<{ id: string; name: string; protocol: string; baseUrl: string; models: Array<{ id: string; displayName: string; capabilities: string[] }> }>> { return request(`/providers/presets${root ? `?root=${encodeURIComponent(root)}` : ''}`); }
 export function createProviderFromPreset(presetId: string, apiKey: string, root?: string): Promise<unknown> { return request(`/providers/from-preset${root ? `?root=${encodeURIComponent(root)}` : ''}`, json('POST', { presetId, apiKey })); }
 

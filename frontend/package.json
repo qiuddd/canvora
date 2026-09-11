@@ -1,6 +1,6 @@
 {
   "name": "@canvora/frontend",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@canvora/shared": "0.0.1",
+    "@canvora/shared": "0.0.2",
     "@vitejs/plugin-react": "^4.3.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

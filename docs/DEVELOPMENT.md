@@ -64,7 +64,25 @@ node scripts/fetch-tools.mjs --only=rife --from-file=D:/下载/rife-ncnn-vulkan-
 
 目前协议入口包括：`openai-images`、`openai-compatible`、`dashscope-image`、`dashscope-video`、`zhipu-image`、`zhipu-video`、`minimax-video`。新增服务商时应补充 `ProviderPreset`、请求体映射、异步任务状态字段和结果 URL 提取，并为 `url`、`b64_json`、`base64` 三类图片返回做测试。生成结果必须下载到当前项目 `assets/` 后再登记，禁止公共图床中转。
 
-接口：`POST /api/generation/image`、`POST /api/generation/video`、`POST /api/generation/text`、`POST /api/generation/:id/cancel`。视频任务写入 `tasks.json`，后端轮询后更新状态并登记素材；应用重启后的云端任务恢复和服务商特定取消接口仍是后续增强项。
+### 服务商与密钥只在本机后台配置
+
+前端**不出现**任何密钥，也不让用户填服务商 ID / 模型 ID：
+
+- 前端只从 `GET /api/providers` 读出名称、协议、能力、模型展示名、启用状态，用 `frontend/src/canvas/generation-options.ts` 按能力筛出可选组合。
+- 生成请求只发送 `providerId`、`model`、`params`、`prompt` 和项目内素材 id。
+- 服务端在 `assertCapability()` 里再校验一次：服务商必须启用、模型必须存在、模型能力必须匹配 `image` / `video` 方向。前端绕不过这一层。
+- `removeProvider()` 会连带删除该服务商的密钥记录，避免遗留孤儿密钥。
+
+### 生成节点的输入与结果
+
+- 上游连进来的图片素材以 `inputs: [{ assetId, kind, role }]` 提交；后端 `resolveInputUrls()` 校验素材属于当前项目、必须是图片，再读文件转成 data URL。
+- 生图结果支持 `url` / `b64_json` / `base64` 三种返回；下载有 http(s) 校验和 2GB 上限。
+- 视频是异步任务：写入 `tasks.json`（带 `nodeId`），后端每 5 秒轮询一次；前端轮询 `GET /api/tasks`，完成后把结果素材放回画布。
+- 结果回画布由前端 `placeGenerationResults()` 负责：在生成节点下方创建结果节点并写入 `sourceNodeId`，同一个素材只放一次（用 `placedAssetsRef` 去重）。
+
+### 本机后台管理页
+
+`backend/src/status-page.ts` 渲染 `GET /` 的管理页面：概览 / 服务商 / 项目 / 素材 / 任务五个页签，用内联脚本调用已有 JSON 接口。页面只做展示和表单提交，业务逻辑一律在后端。密钥输入框是 password 类型，页面只显示尾四位和测试状态。
 
 
 

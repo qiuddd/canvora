@@ -636,6 +636,15 @@ async function cleanupProjectTemp(root: string, projectId: string): Promise<void
   }
 }
 
+export async function deleteJob(workspaceRoot: string, id: string): Promise<boolean> {
+  const state = stateFor(workspaceRoot);
+  const job = state.jobs.find((item) => item.id === id);
+  if (!job || job.status === 'running' || job.status === 'queued') return false;
+  state.jobs = state.jobs.filter((item) => item.id !== id);
+  persist(workspaceRoot, true);
+  return true;
+}
+
 export function listJobs(workspaceRoot: string): Job[] {
   return stateFor(workspaceRoot).jobs.map((job) => ({ ...job }));
 }

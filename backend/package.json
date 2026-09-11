@@ -1,6 +1,6 @@
 {
   "name": "@canvora/backend",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@canvora/shared": "0.0.1",
+    "@canvora/shared": "0.0.2",
     "@fastify/cors": "^10.0.2",
     "fastify": "^5.2.1",
     "nanoid": "^5.1.5"

@@ -12,3 +12,12 @@ export async function createTask(root: string, input: Omit<TaskState, 'id' | 'cr
 export async function getTask(root: string, id: string): Promise<TaskState | undefined> { return (await loadTasks(root)).tasks.find((task) => task.id === id); }
 export async function updateTask(root: string, id: string, patch: Partial<TaskState>): Promise<TaskState | undefined> { const store = await loadTasks(root); const index = store.tasks.findIndex((task) => task.id === id); if (index < 0) return undefined; store.tasks[index] = { ...store.tasks[index], ...patch }; await persist(root, store); return store.tasks[index]; }
 export async function listTasks(root: string): Promise<TaskState[]> { return (await loadTasks(root)).tasks; }
+
+export async function deleteTask(root: string, id: string): Promise<boolean> {
+  const store = await loadTasks(root);
+  const task = store.tasks.find((item) => item.id === id);
+  if (!task || task.status === 'running' || task.status === 'queued') return false;
+  store.tasks = store.tasks.filter((item) => item.id !== id);
+  await persist(root, store);
+  return true;
+}

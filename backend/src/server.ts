@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply } from 'fastify';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,19 +7,20 @@ import { nanoid } from 'nanoid';
 import type { ChatMessage, HealthResponse, JobKind } from '@canvora/shared';
 import {
   assetAbsolutePath, assetById, assignAssetsToGroup, createGroup, createProject, deleteProject,
-  deleteAsset, ensureWorkspace, importAsset, importAssetFromUpload, readCanvas, removeFileIfExists, removeGroup, renameProject, writeCanvas,
+  deleteAsset, ensureWorkspace, importAsset, importAssetFromUpload, readCanvas, removeFileIfExists, removeGroup, renameProject, updateAssetMetadata, writeCanvas,
 } from './workspace.js';
 import { createProxy, createThumbnail, extractFrame, probeMedia } from './media/media.js';
 import { publicError } from './errors.js';
 import { createProvider, getProvider, listProviders, removeProvider, testProvider, updateProvider, listProviderPresets, presetById, type ProviderInput } from './providers.js';
 import { cancelGeneration, execute } from './generation.js';
 import { listSecrets, markSecretTest, removeSecret, upsertSecret } from './secrets.js';
-import { createTask, getTask, listTasks, updateTask } from './tasks.js';
+import { createTask, deleteTask, getTask, listTasks, updateTask } from './tasks.js';
 import { DEEPSEEK_PROVIDER_ID, chatCompletion, testDeepSeekKey } from './chat.js';
-import { cancelJob, enqueueJob, getJob, listJobs, restoreJobs, toolStatus } from './jobs.js';
+import { cancelJob, deleteJob, enqueueJob, getJob, listJobs, restoreJobs, toolStatus } from './jobs.js';
 import { renderStatusPage } from './status-page.js';
 
 const DEFAULT_ROOT = process.env.CANVORA_WORKSPACE ?? 'F:/Canvora';
+const snapshotVersion = '0.0.1';
 const STARTED_AT = Date.now();
 const rootOf = (request: { query?: unknown; body?: unknown }): string => { const source = (request.query ?? request.body ?? {}) as { root?: string }; return source.root ?? DEFAULT_ROOT; };
 
@@ -49,9 +50,9 @@ export const buildServer = () => {
     payload.pipe(sink);
   });
 
-  app.get('/api/health', async (): Promise<HealthResponse> => ({ ok: true, service: 'canvora-backend', version: '0.1.0', timestamp: new Date().toISOString() }));
+  app.get('/api/health', async (): Promise<HealthResponse> => ({ ok: true, service: 'canvora-backend', version: snapshotVersion, timestamp: new Date().toISOString() }));
 
-  // 后端自带的状态页：不打开前端也能看状态、关服务
+  // 后端管理页：服务状态 + 项目 / 素材 / 服务商 / 任务的增删改查
   app.get('/', async (request, reply) => {
     const root = rootOf(request);
     const state = await ensureWorkspace(root);
@@ -59,15 +60,19 @@ export const buildServer = () => {
     const secrets = await listSecrets(root);
     const memory = process.memoryUsage();
     return reply.type('text/html; charset=utf-8').send(renderStatusPage({
-      root, version: '0.1.0', startedAt: STARTED_AT, now: Date.now(),
-      projects: state.projects.map((project) => ({
-        id: project.id, name: project.name, updatedAt: project.updatedAt,
-        assets: state.assets.filter((asset) => asset.projectId === project.id).length,
-      })),
-      totalAssets: state.assets.length,
+      root,
+      version: snapshotVersion,
+      startedAt: STARTED_AT,
+      now: Date.now(),
+      projects: state.projects,
+      assets: state.assets,
+      groups: state.groups ?? [],
+      providers: await listProviders(root),
+      presets: listProviderPresets().map((preset) => ({ id: preset.id, name: preset.name, protocol: preset.protocol, baseUrl: preset.baseUrl })),
+      secrets: secrets.map((secret) => ({ providerId: secret.providerId, last4: secret.last4, testStatus: secret.testStatus })),
+      tasks: await listTasks(root),
       tools: await toolStatus(root),
-      jobs: jobs.slice(0, 20).map((job) => ({ id: job.id, kind: job.kind, status: job.status, statusText: job.statusText, progress: job.progress, startedAt: job.startedAt, finishedAt: job.finishedAt })),
-      secretProviders: secrets.map((secret) => secret.providerId),
+      jobs: jobs.slice(0, 30).map((job) => ({ id: job.id, kind: job.kind, status: job.status, statusText: job.statusText, progress: job.progress, startedAt: job.startedAt, finishedAt: job.finishedAt, resultAssetIds: job.resultAssetIds })),
       memory: { rssMb: memory.rss / 1024 / 1024, heapUsedMb: memory.heapUsed / 1024 / 1024 },
     }));
   });
@@ -235,21 +240,19 @@ export const buildServer = () => {
   app.post('/api/media/frame', async (request, reply) => { try { const body = request.body as { inputPath: string; outputPath: string; atSeconds: number; ffmpeg?: string }; const result = await extractFrame(body.inputPath, body.outputPath, body.atSeconds, body.ffmpeg); if (result.exitCode !== 0) return reply.status(400).send({ message: '抽帧失败', detail: result.stderr }); return { ok: true }; } catch (error) { return reply.status(400).send(publicError(error, '抽帧失败')); } });
 
   // ── AI 生成 ───────────────────────────────────────────
-  app.post('/api/generation/image', async (request, reply) => {
-    const body = request.body as import('./generation.js').GenerationRequest;
-    try { const provider = await getProvider(body.root ?? DEFAULT_ROOT, body.providerId); if (!provider) return reply.status(404).send({ message: '服务商不存在' }); return await execute({ ...body, root: body.root ?? DEFAULT_ROOT }, provider); }
-    catch (error) { return reply.status((error as { statusCode?: number }).statusCode ?? 502).send(publicError(error, '图片生成失败')); }
-  });
-  app.post('/api/generation/text', async (request, reply) => {
-    const body = request.body as import('./generation.js').GenerationRequest;
-    try { const provider = await getProvider(body.root ?? DEFAULT_ROOT, body.providerId); if (!provider) return reply.status(404).send({ message: '服务商不存在' }); return await execute({ ...body, root: body.root ?? DEFAULT_ROOT }, provider); }
-    catch (error) { return reply.status((error as { statusCode?: number }).statusCode ?? 502).send(publicError(error, '文本生成失败')); }
-  });
-  app.post('/api/generation/video', async (request, reply) => {
-    const body = request.body as import('./generation.js').GenerationRequest;
-    try { const provider = await getProvider(body.root ?? DEFAULT_ROOT, body.providerId); if (!provider) return reply.status(404).send({ message: '服务商不存在' }); return await execute({ ...body, root: body.root ?? DEFAULT_ROOT }, provider); }
-    catch (error) { return reply.status((error as { statusCode?: number }).statusCode ?? 502).send(publicError(error, '视频生成失败')); }
-  });
+  const runGeneration = async (request: { body?: unknown }, reply: FastifyReply, expected: 'image' | 'video' | 'text', fallback: string) => {
+    const body = (request.body ?? {}) as import('./generation.js').GenerationRequest;
+    try {
+      const root = body.root ?? DEFAULT_ROOT;
+      const provider = await getProvider(root, body.providerId);
+      if (!provider) return reply.status(404).send({ message: '服务商不存在，请到后端管理页重新配置' });
+      if (!body.projectId) return reply.status(400).send({ message: '缺少项目信息，请先打开一个项目' });
+      return await execute({ ...body, root }, provider, expected);
+    } catch (error) { return reply.status((error as { statusCode?: number }).statusCode ?? 502).send(publicError(error, fallback)); }
+  };
+  app.post('/api/generation/image', async (request, reply) => runGeneration(request, reply, 'image', '图片生成失败'));
+  app.post('/api/generation/text', async (request, reply) => runGeneration(request, reply, 'text', '文本生成失败'));
+  app.post('/api/generation/video', async (request, reply) => runGeneration(request, reply, 'video', '视频生成失败'));
   app.post<{ Params: { id: string } }>('/api/generation/:id/cancel', async (request) => ({ ok: await cancelGeneration(rootOf(request), request.params.id) }));
 
   // ── 服务商与旧任务接口（保留兼容）────────────────────
@@ -273,6 +276,22 @@ export const buildServer = () => {
   app.post('/api/tasks', async (request) => createTask(rootOf(request), request.body as Parameters<typeof createTask>[1]));
   app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => (await getTask(rootOf(request), request.params.id)) ?? reply.status(404).send({ message: '任务不存在' }));
   app.patch<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => (await updateTask(rootOf(request), request.params.id, request.body as Parameters<typeof updateTask>[2])) ?? reply.status(404).send({ message: '任务不存在' }));
+  app.delete<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
+    const id = request.params.id;
+    const task = await getTask(rootOf(request), id);
+    if (!task) return reply.status(404).send({ message: '任务不存在' });
+    if (task.status === 'queued' || task.status === 'running') return reply.status(400).send({ message: '任务还在执行，先取消再删除' });
+    return { ok: await deleteTask(rootOf(request), id) };
+  });
+  app.delete<{ Params: { id: string } }>('/api/jobs/:id', async (request, reply) => {
+    const removed = await deleteJob(rootOf(request), request.params.id);
+    return removed ? { ok: true } : reply.status(400).send({ message: '任务不存在，或还在执行中' });
+  });
+  app.patch<{ Params: { id: string } }>('/api/assets/:id', async (request, reply) => {
+    const body = request.body as { originalName?: string; tags?: string[]; favorite?: boolean };
+    const asset = await updateAssetMetadata(rootOf(request), request.params.id, body);
+    return asset ?? reply.status(404).send({ message: '素材不存在' });
+  });
 
   app.setErrorHandler((error, _request, reply) => {
     const status = (error as { statusCode?: number }).statusCode ?? 500;

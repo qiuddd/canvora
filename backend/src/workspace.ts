@@ -178,6 +178,18 @@ export async function deleteAsset(root: string, assetId: string): Promise<boolea
   });
 }
 
+export async function updateAssetMetadata(root: string, assetId: string, patch: Partial<Pick<Asset, 'originalName' | 'tags' | 'favorite' | 'groupId'>>): Promise<Asset | undefined> {
+  return mutateWorkspace(root, (state) => {
+    const asset = assetById(state, assetId);
+    if (!asset) return undefined;
+    if (patch.originalName !== undefined && patch.originalName.trim()) asset.originalName = patch.originalName.trim();
+    if (patch.tags !== undefined) asset.tags = patch.tags.filter((tag) => typeof tag === 'string').map((tag) => tag.trim()).filter(Boolean);
+    if (patch.favorite !== undefined) asset.favorite = Boolean(patch.favorite);
+    if (patch.groupId !== undefined) asset.groupId = patch.groupId;
+    return asset;
+  });
+}
+
 // ── 项目 ──────────────────────────────────────────────
 export async function createProject(root: string, name: string): Promise<Project> {
   return mutateWorkspace(root, async (state) => {
