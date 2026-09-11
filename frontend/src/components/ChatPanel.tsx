@@ -10,7 +10,7 @@ interface Props {
 }
 
 interface Attachment { id: string; name: string; dataUrl: string }
-interface Bubble extends ChatMessage { id: string; error?: boolean; images?: string[] }
+interface Bubble extends Omit<ChatMessage, 'content'> { id: string; content: string; error?: boolean; images?: string[] }
 
 const SYSTEM_PROMPT = '你是 Canvora 里的创作助手。用户在做 AI 短片、动画和社交平台素材。回答用简体中文，简短直接，能给出可直接使用的提示词或文案。';
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;

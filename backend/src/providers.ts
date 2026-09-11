@@ -6,6 +6,18 @@ import { AppError, classifyProviderError } from './errors.js';
 import { markSecretTest, readSecret, upsertSecret } from './secrets.js';
 
 interface ProviderFile { providers: Provider[] }
+export interface ProviderPreset { id: string; name: string; protocol: Provider['protocol']; baseUrl: string; models: ProviderModel[] }
+export const PROVIDER_PRESETS: ProviderPreset[] = [
+  { id: 'deepseek', name: 'DeepSeek Flash', protocol: 'openai-compatible', baseUrl: 'https://api.deepseek.com', models: [{ id: 'deepseek-flash', displayName: 'DeepSeek Flash', capabilities: ['text', 'image2image'] }] },
+  { id: 'dashscope-image', name: '阿里百炼图片', protocol: 'dashscope-image', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', models: [{ id: 'wan2.1-t2i-turbo', displayName: '通义万相图片', capabilities: ['text2image', 'imageEdit'] }] },
+  { id: 'dashscope', name: '阿里百炼视频', protocol: 'dashscope-video', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', models: [{ id: 'wan2.1-t2v-turbo', displayName: '通义万相视频', capabilities: ['text2video', 'image2video', 'firstLastFrame'] }] },
+  { id: 'zhipu-image', name: '智谱图片', protocol: 'zhipu-image', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: [{ id: 'cogview-3-plus', displayName: 'CogView 图片', capabilities: ['text2image', 'imageEdit'] }] },
+  { id: 'zhipu', name: '智谱视频', protocol: 'zhipu-video', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: [{ id: 'cogvideox-3', displayName: 'CogVideoX 视频', capabilities: ['text2video', 'image2video'] }] },
+  { id: 'volcengine', name: '火山引擎', protocol: 'openai-images', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: [{ id: 'doubao-seedream-3-0-t2i', displayName: '豆包 Seedream', capabilities: ['text2image', 'imageEdit'] }] },
+  { id: 'minimax', name: 'MiniMax', protocol: 'minimax-video', baseUrl: 'https://api.minimaxi.com/v1', models: [{ id: 'MiniMax-Hailuo-02', displayName: '海螺视频', capabilities: ['text2video', 'image2video'] }] },
+];
+export function listProviderPresets(): ProviderPreset[] { return PROVIDER_PRESETS.map((preset) => ({ ...preset, models: preset.models.map((model) => ({ ...model, capabilities: [...model.capabilities] })) })); }
+export function presetById(id: string): ProviderPreset | undefined { return PROVIDER_PRESETS.find((preset) => preset.id === id); }
 const providerFile = (root: string) => join(root, 'providers.json');
 export type ProviderInput = Omit<Provider, 'id' | 'apiKeyRef' | 'createdAt' | 'isPreset' | 'lastTestedAt' | 'lastTestStatus'> & { apiKey?: string; apiKeyRef?: string; isPreset?: boolean };
 

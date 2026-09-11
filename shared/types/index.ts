@@ -74,7 +74,10 @@ export interface Job {
 export interface ToolStatus { ffmpeg: boolean; ffprobe: boolean; realesrgan: boolean; rife: boolean }
 
 export type ChatRole = 'system' | 'user' | 'assistant';
-export interface ChatMessage { role: ChatRole; content: string }
+export interface ChatTextPart { type: 'text'; text: string }
+export interface ChatImagePart { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }
+export type ChatContent = string | Array<ChatTextPart | ChatImagePart>
+export interface ChatMessage { role: ChatRole; content: ChatContent }
 export interface ChatReply { content: string; model: string; usage?: { promptTokens: number; completionTokens: number } }
 
 export interface ProviderSummary { id: string; name: string; protocol: string; baseUrl: string; hasKey: boolean; models: string[]; createdAt: number }

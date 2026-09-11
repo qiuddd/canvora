@@ -1,7 +1,7 @@
 import { memo, useCallback, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Asset, CanvasNode, PortKind } from '@canvora/shared';
-import { assetFileUrl, assetThumbUrl } from '../api/client';
+import { assetFileUrl, assetThumbUrl, generateImage, generateVideo } from '../api/client';
 import { KIND_LABELS, PORT_COLORS, PORT_ROW_HEIGHT, nodeSpec } from './ports';
 
 /** 同一时刻只允许一个视频节点在播放（16GB 内存机器上的硬约束）。 */
@@ -124,7 +124,23 @@ export const CanvasNodeView = memo(function CanvasNodeView({ node, zoom, root, a
       </div>;
     }
     if (node.kind === 'generateImage' || node.kind === 'generateVideo') {
-      return <div className="node-placeholder"><span>{node.kind === 'generateImage' ? '生图配置' : '生视频配置'}</span><small>需要先在设置里配置服务商和密钥</small></div>;
+      const isVideo = node.kind === 'generateVideo';
+      const providerId = String(node.data.providerId ?? '');
+      const model = String(node.data.model ?? '');
+      const prompt = String(node.data.prompt ?? node.data.text ?? '');
+      return <div className="node-params" onPointerDown={(event) => event.stopPropagation()}>
+        <input value={providerId} placeholder="服务商 ID" onChange={(event) => onUpdateData(node.id, { providerId: event.target.value })} />
+        <input value={model} placeholder="模型 ID" onChange={(event) => onUpdateData(node.id, { model: event.target.value })} />
+        <textarea value={prompt} placeholder="写下提示词…" onChange={(event) => onUpdateData(node.id, { prompt: event.target.value })} />
+        <button className="primary-button" onClick={() => {
+          const input = { root, projectId: node.projectId, providerId, model, prompt };
+          void (isVideo ? generateVideo(input) : generateImage(input)).then((result) => {
+            if (result.assetIds?.[0]) onUpdateData(node.id, { assetId: result.assetIds[0], status: 'succeeded' });
+            else if (result.taskId) onUpdateData(node.id, { taskId: result.taskId, status: 'queued' });
+          }).catch((error: unknown) => onUpdateData(node.id, { status: 'failed', error: error instanceof Error ? error.message : '生成失败' }));
+        }}>运行</button>
+        {node.data.status === 'failed' && <small className="muted">{String(node.data.error ?? '生成失败')}</small>}
+      </div>;
     }
     return <div className="node-placeholder"><span>等待输入</span></div>;
   };

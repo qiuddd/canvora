@@ -11,7 +11,8 @@ import {
 } from './workspace.js';
 import { createProxy, createThumbnail, extractFrame, probeMedia } from './media/media.js';
 import { publicError } from './errors.js';
-import { createProvider, getProvider, listProviders, removeProvider, testProvider, updateProvider, type ProviderInput } from './providers.js';
+import { createProvider, getProvider, listProviders, removeProvider, testProvider, updateProvider, listProviderPresets, presetById, type ProviderInput } from './providers.js';
+import { cancelGeneration, execute } from './generation.js';
 import { listSecrets, markSecretTest, removeSecret, upsertSecret } from './secrets.js';
 import { createTask, getTask, listTasks, updateTask } from './tasks.js';
 import { DEEPSEEK_PROVIDER_ID, chatCompletion, testDeepSeekKey } from './chat.js';
@@ -233,7 +234,33 @@ export const buildServer = () => {
   app.post('/api/media/proxy', async (request, reply) => { try { const body = request.body as { inputPath: string; outputPath: string; ffmpeg?: string }; const result = await createProxy(body.inputPath, body.outputPath, body.ffmpeg); if (result.exitCode !== 0) return reply.status(400).send({ message: '代理文件生成失败', detail: result.stderr }); return { ok: true }; } catch (error) { return reply.status(400).send(publicError(error, '代理文件生成失败')); } });
   app.post('/api/media/frame', async (request, reply) => { try { const body = request.body as { inputPath: string; outputPath: string; atSeconds: number; ffmpeg?: string }; const result = await extractFrame(body.inputPath, body.outputPath, body.atSeconds, body.ffmpeg); if (result.exitCode !== 0) return reply.status(400).send({ message: '抽帧失败', detail: result.stderr }); return { ok: true }; } catch (error) { return reply.status(400).send(publicError(error, '抽帧失败')); } });
 
+  // ── AI 生成 ───────────────────────────────────────────
+  app.post('/api/generation/image', async (request, reply) => {
+    const body = request.body as import('./generation.js').GenerationRequest;
+    try { const provider = await getProvider(body.root ?? DEFAULT_ROOT, body.providerId); if (!provider) return reply.status(404).send({ message: '服务商不存在' }); return await execute({ ...body, root: body.root ?? DEFAULT_ROOT }, provider); }
+    catch (error) { return reply.status((error as { statusCode?: number }).statusCode ?? 502).send(publicError(error, '图片生成失败')); }
+  });
+  app.post('/api/generation/text', async (request, reply) => {
+    const body = request.body as import('./generation.js').GenerationRequest;
+    try { const provider = await getProvider(body.root ?? DEFAULT_ROOT, body.providerId); if (!provider) return reply.status(404).send({ message: '服务商不存在' }); return await execute({ ...body, root: body.root ?? DEFAULT_ROOT }, provider); }
+    catch (error) { return reply.status((error as { statusCode?: number }).statusCode ?? 502).send(publicError(error, '文本生成失败')); }
+  });
+  app.post('/api/generation/video', async (request, reply) => {
+    const body = request.body as import('./generation.js').GenerationRequest;
+    try { const provider = await getProvider(body.root ?? DEFAULT_ROOT, body.providerId); if (!provider) return reply.status(404).send({ message: '服务商不存在' }); return await execute({ ...body, root: body.root ?? DEFAULT_ROOT }, provider); }
+    catch (error) { return reply.status((error as { statusCode?: number }).statusCode ?? 502).send(publicError(error, '视频生成失败')); }
+  });
+  app.post<{ Params: { id: string } }>('/api/generation/:id/cancel', async (request) => ({ ok: await cancelGeneration(rootOf(request), request.params.id) }));
+
   // ── 服务商与旧任务接口（保留兼容）────────────────────
+  app.get('/api/providers/presets', async () => listProviderPresets());
+  app.post('/api/providers/from-preset', async (request, reply) => {
+    const body = request.body as { presetId?: string; apiKey?: string };
+    const preset = presetById(body?.presetId ?? '');
+    if (!preset) return reply.status(404).send({ message: '找不到这个服务商预置' });
+    try { return await createProvider(rootOf(request), { ...preset, enabled: true, apiKey: body.apiKey, isPreset: true }); }
+    catch (error) { return reply.status(400).send(publicError(error)); }
+  });
   app.post('/api/providers', async (request, reply) => { try { return await createProvider(rootOf(request), request.body as ProviderInput); } catch (error) { return reply.status(400).send(publicError(error)); } });
   app.get('/api/providers', async (request) => listProviders(rootOf(request)));
   app.patch<{ Params: { id: string } }>('/api/providers/:id', async (request, reply) => (await updateProvider(rootOf(request), request.params.id, request.body as Partial<ProviderInput>)) ?? reply.status(404).send({ message: '服务商不存在' }));

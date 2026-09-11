@@ -114,3 +114,13 @@ export function saveChatKey(value: string, root?: string): Promise<{ ok: true; l
 export function testChatKey(apiKey?: string, root?: string): Promise<{ ok: true; models: string[] }> {
   return request(`/chat/test${root ? `?root=${encodeURIComponent(root)}` : ''}`, json('POST', { apiKey }));
 }
+
+export interface GenerationRequest { root: string; projectId: string; providerId: string; model?: string; prompt: string; params?: Record<string, unknown>; inputs?: Array<{ dataUrl?: string; assetId?: string }> }
+export interface GenerationResult { kind: 'image' | 'video' | 'text'; assetIds?: string[]; content?: string; taskId?: string; status?: string }
+export function generateImage(input: GenerationRequest): Promise<GenerationResult> { return request('/generation/image', json('POST', input)); }
+export function generateVideo(input: GenerationRequest): Promise<GenerationResult> { return request('/generation/video', json('POST', input)); }
+export function generateText(input: GenerationRequest): Promise<GenerationResult> { return request('/generation/text', json('POST', input)); }
+export function cancelGeneration(id: string, root?: string): Promise<{ ok: boolean }> { return request(`/generation/${encodeURIComponent(id)}/cancel${root ? `?root=${encodeURIComponent(root)}` : ''}`, { method: 'POST' }); }
+export function listProviderPresets(root?: string): Promise<Array<{ id: string; name: string; protocol: string; baseUrl: string; models: Array<{ id: string; displayName: string; capabilities: string[] }> }>> { return request(`/providers/presets${root ? `?root=${encodeURIComponent(root)}` : ''}`); }
+export function createProviderFromPreset(presetId: string, apiKey: string, root?: string): Promise<unknown> { return request(`/providers/from-preset${root ? `?root=${encodeURIComponent(root)}` : ''}`, json('POST', { presetId, apiKey })); }
+

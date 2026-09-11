@@ -1,4 +1,4 @@
-export type ProtocolType = 'openai-compatible' | 'openai-images' | 'ark-video' | 'dashscope-video' | 'zhipu-video' | 'minimax-video' | 'gemini' | 'custom-script';
+export type ProtocolType = 'openai-compatible' | 'openai-images' | 'dashscope-image' | 'ark-video' | 'dashscope-video' | 'zhipu-video' | 'zhipu-image' | 'minimax-video' | 'gemini' | 'custom-script';
 export type ModelCapability = 'text' | 'text2image' | 'image2image' | 'text2video' | 'image2video' | 'firstLastFrame' | 'imageEdit';
 export interface ProviderModel { id: string; displayName: string; capabilities: ModelCapability[]; paramHints?: Record<string, unknown> }
 export interface Provider { id: string; name: string; protocol: ProtocolType; baseUrl: string; apiKeyRef: string; enabled: boolean; models: ProviderModel[]; isPreset: boolean; createdAt: number; lastTestedAt?: number; lastTestStatus?: 'success' | 'failed' }
