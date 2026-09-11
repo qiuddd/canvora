@@ -47,6 +47,7 @@ export function App() {
   const timelineClips = timeline.tracks.reduce((sum, track) => sum + track.clips.length, 0);
   const resetTimeline = useTimelineStore((state) => state.setTimeline);
   const [boxSelect, setBoxSelect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [spaceHeld, setSpaceHeld] = useState(false);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const panStart = useRef<{ clientX: number; clientY: number; panX: number; panY: number } | null>(null);
@@ -312,6 +313,7 @@ export function App() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return;
+      if (event.code === 'Space') { event.preventDefault(); setSpaceHeld(true); return; }
       const meta = event.ctrlKey || event.metaKey;
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeIds.length) deleteSelection();
       if (meta && event.key.toLowerCase() === 'd' && selectedNodeIds.length) { event.preventDefault(); duplicateSelection(); }
@@ -321,13 +323,22 @@ export function App() {
       if (event.key === 'Escape') { setConnecting(null); setMenu(null); setSelection([]); }
       if (meta && event.key === '0') { event.preventDefault(); setZoom(1); }
     };
+    // 空格是"按住平移"：必须在 keyup 里松开，否则会一直处于平移态
+    const onKeyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false); };
+    const onBlur = () => setSpaceHeld(false);
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
   }, [createNodeGroup, deleteSelection, duplicateSelection, nodes, selectedNodeIds, setSelection]);
 
   const onCanvasPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button === 1 || (event.button === 0 && event.altKey)) {
-      // 中键或 Alt+左键：平移
+    // 中键、Alt+左键、或按住空格：平移。空格是多数专业工具的习惯按键。
+    if (event.button === 1 || (event.button === 0 && (event.altKey || spaceHeld))) {
       panStart.current = { clientX: event.clientX, clientY: event.clientY, panX: pan.x, panY: pan.y };
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
@@ -519,7 +530,7 @@ export function App() {
           <button className="zoom-button" onClick={() => { setPan({ x: 0, y: 0 }); setZoom(1); }}>重置</button>
         </div>
         <div
-          className="canvas-area"
+          className={`canvas-area ${spaceHeld ? 'space-pan' : ''}`}
           ref={canvasRef}
           onDragOver={(event) => event.preventDefault()}
           onDrop={onDrop}

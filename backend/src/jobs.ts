@@ -351,8 +351,13 @@ export function buildRealEsrganArgs(options: RealEsrganArgsInput): string[] {
   return args;
 }
 
-export function buildRifeArgs(input: string, output: string, model: string, multiplier: number): string[] {
-  return ['-i', input, '-o', output, '-m', model, '-n', String(multiplier)];
+/**
+ * RIFE 的 `-n` 是**目标总帧数**（不是倍率）。传成倍率会让它只输出几帧，
+ * 结果是一个零点几秒的残片——实测过 30 帧传 `-n 2` 只出 8 帧、0.13 秒。
+ * 所以这里必须传「这一批的输入帧数 × 倍率」。
+ */
+export function buildRifeArgs(input: string, output: string, model: string, targetFrameCount: number): string[] {
+  return ['-i', input, '-o', output, '-m', model, '-n', String(Math.max(1, Math.floor(targetFrameCount)))];
 }
 
 /** 把一批处理好的帧合回一段视频（编码参数必须和后面 concat 的其它段完全一致）。 */
@@ -1397,7 +1402,9 @@ async function runVideoInterpolate(ctx: JobContext, state: WorkspaceState, asset
     outputSuffix: `补帧${multiplier}x`,
     verb: '补帧',
     processBatch: async (batchCtx, batch, inDir, outDir) => {
-      const outcome = await runChild(batchCtx, tool, buildRifeArgs(inDir, outDir, model, multiplier), { cwd: dirname(tool), allowFailure: true });
+      // -n 是目标总帧数：这一批输入 batch.frameCount 帧，目标是倍率倍
+      const target = batch.frameCount * multiplier;
+      const outcome = await runChild(batchCtx, tool, buildRifeArgs(inDir, outDir, model, target), { cwd: dirname(tool), allowFailure: true });
       if (!outcome.ok) throw new JobError(`第 ${batch.index} 批补帧失败`, shortStderr(outcome.stderr));
     },
   });

@@ -166,8 +166,10 @@ test('给了模型目录才追加 -m，默认不写', () => {
   assert.deepEqual(args.slice(-2), ['-m', 'F:/Canvora/bin/models']);
 });
 
-test('buildRifeArgs 的 -m 是模型名、-n 是倍率', () => {
-  assert.deepEqual(buildRifeArgs('frames', 'frames_2x', 'rife-v4.6', 2), ['-i', 'frames', '-o', 'frames_2x', '-m', 'rife-v4.6', '-n', '2']);
+test('buildRifeArgs 的 -n 传的是目标总帧数而不是倍率', () => {
+  // RIFE 的 -n 是目标总帧数：60 帧输入要 2 倍就传 120，传 2 只会得到零点几秒的残片
+  assert.deepEqual(buildRifeArgs('frames', 'frames_2x', 'rife-v4.6', 120), ['-i', 'frames', '-o', 'frames_2x', '-m', 'rife-v4.6', '-n', '120']);
+  assert.deepEqual(buildRifeArgs('frames', 'frames_4x', 'rife-v4.6', 240), ['-i', 'frames', '-o', 'frames_4x', '-m', 'rife-v4.6', '-n', '240']);
 });
 
 test('halveTile 给显存不足重试用，不低于 ncnn 的 32 下限', () => {

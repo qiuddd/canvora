@@ -15,17 +15,22 @@ export async function resolveDeepSeekKey(workspaceRoot: string): Promise<string>
   return key;
 }
 
-interface DeepSeekChoice { message?: { content?: string } }
+interface DeepSeekChoice { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }
 interface DeepSeekResponse { model?: string; choices?: DeepSeekChoice[]; usage?: { prompt_tokens?: number; completion_tokens?: number } }
 
 /**
  * 调用 DeepSeek 的 OpenAI 兼容对话接口。
  * 密钥只在服务端使用，永远不会返回给前端。
+ *
+ * 图片输入：deepseek-flash 支持 vision，格式是 content 数组里放
+ * `{ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,...' } }`。
+ * ⚠️ 不要给这类请求设很小的 max_tokens：模型会先写 reasoning_content，
+ * token 不够时 content 会是空字符串（finish_reason=length），看起来像"不支持图片"。
  */
 export async function chatCompletion(
   workspaceRoot: string,
   messages: ChatMessage[],
-  options: { model?: string; temperature?: number; baseUrl?: string } = {},
+  options: { model?: string; temperature?: number; baseUrl?: string; maxTokens?: number } = {},
 ): Promise<ChatReply> {
   if (messages.length === 0) throw new AppError('invalid-request', '对话内容不能为空', undefined, 400);
   const key = await resolveDeepSeekKey(workspaceRoot);
@@ -40,9 +45,10 @@ export async function chatCompletion(
         model: options.model ?? DEFAULT_MODEL,
         messages,
         temperature: options.temperature ?? 0.7,
+        ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
         stream: false,
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(180_000),
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -54,14 +60,20 @@ export async function chatCompletion(
     if (response.status === 401) throw new AppError('invalid-key', 'DeepSeek 密钥无效，请到服务商后台确认', text, 401);
     if (response.status === 402) throw new AppError('insufficient-balance', 'DeepSeek 账户余额不足，请先充值', text, 402);
     if (response.status === 429) throw new AppError('forbidden', '请求太频繁被限流，请稍后再试', text, 429);
+    if (response.status === 400) throw new AppError('invalid-request', 'DeepSeek 拒绝了这次请求（常见原因：图片格式不支持或体积超限）', text, 400);
     throw new AppError('provider', `DeepSeek 接口返回错误（${response.status}）`, text, response.status);
   }
 
   let payload: DeepSeekResponse;
   try { payload = JSON.parse(text) as DeepSeekResponse; } catch { throw new AppError('provider', 'DeepSeek 返回的内容无法解析', text); }
 
-  const content = payload.choices?.[0]?.message?.content;
-  if (!content) throw new AppError('provider', 'DeepSeek 没有返回内容', text);
+  const choice = payload.choices?.[0];
+  const content = choice?.message?.content ?? '';
+  if (!content.trim()) {
+    // 内容为空且被长度截断：模型把预算花在推理上了，提示用户重试而不是误报"不支持图片"
+    if (choice?.finish_reason === 'length') throw new AppError('provider', '这次回答被长度限制截断了，请再发一次或把问题说得更具体', text);
+    throw new AppError('provider', 'DeepSeek 没有返回内容', text);
+  }
   return {
     content,
     model: payload.model ?? options.model ?? DEFAULT_MODEL,

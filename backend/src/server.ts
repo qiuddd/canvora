@@ -16,8 +16,10 @@ import { listSecrets, markSecretTest, removeSecret, upsertSecret } from './secre
 import { createTask, getTask, listTasks, updateTask } from './tasks.js';
 import { DEEPSEEK_PROVIDER_ID, chatCompletion, testDeepSeekKey } from './chat.js';
 import { cancelJob, enqueueJob, getJob, listJobs, restoreJobs, toolStatus } from './jobs.js';
+import { renderStatusPage } from './status-page.js';
 
 const DEFAULT_ROOT = process.env.CANVORA_WORKSPACE ?? 'F:/Canvora';
+const STARTED_AT = Date.now();
 const rootOf = (request: { query?: unknown; body?: unknown }): string => { const source = (request.query ?? request.body ?? {}) as { root?: string }; return source.root ?? DEFAULT_ROOT; };
 
 const mimeFor = (ext: string, kind: string): string => {
@@ -47,6 +49,37 @@ export const buildServer = () => {
   });
 
   app.get('/api/health', async (): Promise<HealthResponse> => ({ ok: true, service: 'canvora-backend', version: '0.1.0', timestamp: new Date().toISOString() }));
+
+  // 后端自带的状态页：不打开前端也能看状态、关服务
+  app.get('/', async (request, reply) => {
+    const root = rootOf(request);
+    const state = await ensureWorkspace(root);
+    const jobs = listJobs(root);
+    const secrets = await listSecrets(root);
+    const memory = process.memoryUsage();
+    return reply.type('text/html; charset=utf-8').send(renderStatusPage({
+      root, version: '0.1.0', startedAt: STARTED_AT, now: Date.now(),
+      projects: state.projects.map((project) => ({
+        id: project.id, name: project.name, updatedAt: project.updatedAt,
+        assets: state.assets.filter((asset) => asset.projectId === project.id).length,
+      })),
+      totalAssets: state.assets.length,
+      tools: await toolStatus(root),
+      jobs: jobs.slice(0, 20).map((job) => ({ id: job.id, kind: job.kind, status: job.status, statusText: job.statusText, progress: job.progress, startedAt: job.startedAt, finishedAt: job.finishedAt })),
+      secretProviders: secrets.map((secret) => secret.providerId),
+      memory: { rssMb: memory.rss / 1024 / 1024, heapUsedMb: memory.heapUsed / 1024 / 1024 },
+    }));
+  });
+
+  app.post('/api/shutdown', async (_request, reply) => {
+    reply.send({ ok: true, message: '后端正在关闭' });
+    // 先把响应发出去，再退出，否则前端拿不到确认
+    setTimeout(() => {
+      console.log('收到关闭请求，Canvora 后端即将退出');
+      process.exit(0);
+    }, 300);
+    return reply;
+  });
 
   app.get('/api/workspace', async (request) => ensureWorkspace(rootOf(request)));
 

@@ -346,5 +346,42 @@ button { cursor: pointer; border: 0; }
 .dark .clip-inspector input, .dark .clip-inspector select { border-color: #475569; }
 .clip-inspector input { width: 70px; }
 
+/* ── 深色模式：线条与选中态加强对比，避免"看不清" ── */
+.dark .edges-layer .edge-group path { stroke-width: 3; }
+.dark .edges-layer.preview path { stroke-width: 3; }
+.dark .canvas-node { border-color: #64748b; }
+.dark .canvas-node.selected { border: 2px solid #a5b4fc; box-shadow: 0 0 0 3px #6366f166, 0 8px 22px #00000066; }
+.dark .node-header { color: #a5b4fc; }
+.dark .port { border-color: #0f172a; box-shadow: 0 0 0 1.5px #94a3b8; }
+.dark .node-group { border-color: #818cf8; background: #6366f11f; }
+.dark .select-box { border: 1.5px solid #a5b4fc; background: #6366f133; }
+.dark .timeline-clip { background: linear-gradient(180deg, #818cf8, #6366f1); border-color: #c7d2fe; }
+.dark .timeline-clip.mode-trim { background: linear-gradient(180deg, #38bdf8, #0284c7); border-color: #bae6fd; }
+.dark .timeline-clip.selected { outline: 3px solid #fbbf24; outline-offset: 1px; }
+.dark .timeline-track { background: #131a24; }
+.dark .timeline-ruler .tick { color: #cbd5e1; border-color: #475569; }
+.dark .clip-edge { background: #ffffff4d; }
+.dark .playhead { background: #f87171; box-shadow: 0 0 6px #f87171; }
+.dark .track-hint, .dark .preview-empty { color: #94a3b8; }
+.dark .timecode { color: #fde68a; background: #422006; }
+.dark .context-menu { border-color: #475569; box-shadow: 0 14px 40px #00000080; }
+.dark .gate section { border-color: #3b4657; }
+.dark .asset-card.picked { outline: 2px solid #a5b4fc; background: #303a4d; }
+
+/* ── 时间轴多轨道 ─────────────────────────────────── */
+.timeline-track { position: relative; }
+.track-tag { position: absolute; top: 2px; left: 6px; z-index: 1; color: #94a3b8; font-size: 10px; pointer-events: none; }
+.dark .track-tag { color: #94a3b8; }
+.track-actions { display: flex; gap: 6px; padding: 2px 0 6px; }
+.track-actions button { padding: 3px 9px; color: #64748b; background: #f1f5f9; border-radius: 6px; font-size: 10px; }
+.track-actions button:hover { color: #4338ca; background: #e0e7ff; }
+.dark .track-actions button { color: #cbd5e1; background: #2b3441; }
+.timeline-clip.disabled { opacity: .4; }
+.timeline-clip.muted::after { content: '🔇'; position: absolute; right: 4px; top: 2px; font-size: 10px; }
+.canvas-area.space-pan { cursor: grab; }
+.canvas-area.space-pan:active { cursor: grabbing; }
+.canvas-node[draggable="true"] { cursor: grab; }
+
+
 
 

@@ -140,6 +140,9 @@ export const CanvasNodeView = memo(function CanvasNodeView({ node, zoom, root, a
   return <div
     className={`canvas-node ${selected ? 'selected' : ''}`}
     style={{ left: node.x, top: node.y, width: node.width }}
+    // 图片/视频节点可以直接拖到下方时间轴轨道成为剪辑片段
+    draggable={Boolean(assetId)}
+    onDragStart={(event) => { if (assetId) { event.dataTransfer.setData('application/x-canvora-asset', assetId); event.dataTransfer.effectAllowed = 'copy'; } }}
     onPointerDown={(event) => { event.stopPropagation(); onSelect(node.id, event.shiftKey); }}
     onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onContextMenu(node.id, event.clientX, event.clientY); }}
   >

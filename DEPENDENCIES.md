@@ -110,3 +110,15 @@
 - [ ] 每次 `npm install` 后核对实际安装的版本号，更新「版本」列
 - [ ] 每个阶段验收时，通读本表确认没有遗漏或违规项
 - [ ] 发现新依赖的 GitHub 侧栏显示 `NOASSERTION` / `Other` / 无许可证时，**必须人肉读 LICENSE 文件**并在本表留下核查记录
+
+---
+
+## 6. 本地 AI 二进制（2026-09-11 实际安装并实测）
+
+| 工具 | 版本 / 资产 | 安装位置 | 许可证 | 实测结果 |
+|---|---|---|---|---|
+| `realesrgan-ncnn-vulkan` | Real-ESRGAN v0.2.5.0，资产 `realesrgan-ncnn-vulkan-20220424-windows.zip`（43.4 MB） | `F:/Canvora/bin/realesrgan-ncnn-vulkan.exe` | **BSD-3-Clause** | 754×882 图放大 4 倍 → 3016×3528 ✅ |
+| `rife-ncnn-vulkan` | nihui/rife-ncnn-vulkan release `20221029`，资产 `rife-ncnn-vulkan-20221029-windows.zip`（431 MB，含多版本模型） | `F:/Canvora/bin/rife-ncnn-vulkan.exe`（模型 `rife-v4.6` 等） | **MIT** | 26.215s/30fps → 26.2s/60fps/1572 帧 ✅ |
+
+获取方式：`node scripts/fetch-tools.mjs --proxy=http://127.0.0.1:7897`（脚本内用 `curl --proxy`，默认代理即 7897）。
+两个二进制都不提交到 git，只用脚本获取。

@@ -48,6 +48,9 @@ if (process.platform === 'win32') spawnSync('chcp.com', ['65001'], { stdio: 'ign
 const log = (message) => console.log(message);
 const warn = (message) => console.warn(message);
 
+/** 直连 GitHub 常被重置，默认走本机代理；用 --no-proxy 可以关掉。 */
+const DEFAULT_PROXY = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? 'http://127.0.0.1:7897';
+
 function parseArgs(argv) {
   const options = { force: false, workspace: process.env.CANVORA_WORKSPACE ?? 'F:/Canvora', only: undefined, fromFile: undefined };
   for (const arg of argv) {
@@ -56,6 +59,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--workspace=')) options.workspace = arg.slice('--workspace='.length);
     else if (arg.startsWith('--only=')) options.only = arg.slice('--only='.length);
     else if (arg.startsWith('--from-file=')) options.fromFile = arg.slice('--from-file='.length);
+    else if (arg.startsWith('--proxy=')) options.proxy = arg.slice('--proxy='.length) || undefined;
+    else if (arg === '--no-proxy') options.proxy = undefined;
     else if (!arg.startsWith('-')) options.workspace = arg;
   }
   return options;
@@ -117,8 +122,30 @@ async function extractZip(zipPath, destination) {
   throw new Error(`解压失败：${viaPowershell.stderr.trim() || viaTar.stderr.trim()}`);
 }
 
-async function download(url, destination) {
+/**
+ * 下载。
+ * 直连 GitHub 的 release 在国内经常被重置连接，所以默认走本机代理；有代理时用 curl，
+ * 因为 Node 的 fetch 不认代理环境变量，而 Windows 自带 curl 并且 `--proxy` 实测可用。
+ */
+async function download(url, destination, proxy) {
   log(`  正在下载：${url}`);
+  if (proxy) {
+    log(`  走代理：${proxy}`);
+    const args = ['-sS', '-L', '--proxy', proxy, '-o', destination, url];
+    const result = await new Promise((resolve) => {
+      const child = spawn('curl', args, { windowsHide: true });
+      child.stderr.on('data', (chunk) => process.stderr.write(`  ${chunk}`));
+      child.once('error', () => resolve({ ok: false, message: '找不到 curl' }));
+      child.once('close', (code) => resolve({ ok: code === 0, message: `curl 退出码 ${code}` }));
+    });
+    if (result.ok) {
+      const size = await stat(destination).then((info) => info.size).catch(() => 0);
+      if (size > 1024 * 1024) { log(`  下载完成，共 ${(size / 1024 / 1024).toFixed(1)} MB`); return; }
+      throw new Error(`下载到的文件只有 ${size} 字节，可能是代理不通或地址失效`);
+    }
+    log(`  代理下载失败（${result.message}），改回直连试试`);
+  }
+
   const response = await fetch(url, { redirect: 'follow' });
   if (!response.ok || !response.body) throw new Error(`下载失败：HTTP ${response.status} ${response.statusText}`);
   const totalBytes = Number(response.headers.get('content-length') ?? 0);
@@ -184,7 +211,7 @@ async function installTool(tool, options) {
       log(`  用本地压缩包安装：${zipPath}`);
     } else {
       try {
-        await download(tool.url, downloadedZip);
+        await download(tool.url, downloadedZip, options.proxy);
       } catch (error) {
         throw new Error(`${error instanceof Error ? error.message : String(error)}\n  如果这台机器访问不了 GitHub，请用浏览器手动下载上面的 zip，再运行：node scripts/fetch-tools.mjs --only=${tool.key} --from-file=<zip 路径>`);
       }
@@ -229,6 +256,7 @@ async function installTool(tool, options) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.proxy === undefined) options.proxy = DEFAULT_PROXY;
   if (options.help) {
     usage();
     return;

@@ -8,14 +8,24 @@ interface TimelineState {
   playhead: number;
   playing: boolean;
   selectedClipId: string | null;
-  /** 每个片段的边缘拖拽模式：变速（默认）或裁剪。 */
-  edgeModes: Record<string, 'speed' | 'trim'>;
+  /**
+   * 片段边缘拖拽模式。**默认是裁剪**（往左拉就是把后半段裁掉，保留 1~7 秒这种），
+   * 因为这才是剪辑软件的常规语义；变速模式需要双击片段显式切换。
+   */
+  edgeModes: Record<string, 'trim' | 'speed'>;
   zoom: number;
   setTimeline: (timeline: Timeline) => void;
   setPlayhead: (seconds: number) => void;
   setPlaying: (playing: boolean) => void;
   selectClip: (id: string | null) => void;
   toggleEdgeMode: (id: string) => void;
+  setEdgeMode: (id: string, mode: 'trim' | 'speed') => void;
+  duplicateClip: (clipId: string) => string | null;
+  splitSelected: (seconds: number) => boolean;
+  toggleClipMuted: (clipId: string) => void;
+  toggleClipEnabled: (clipId: string) => void;
+  addTrack: (kind: Track['kind']) => void;
+  removeTrack: (trackId: string) => void;
   setZoom: (zoom: number) => void;
   addClip: (asset: { id: string; kind: string; durationSec?: number }, trackKind?: Track['kind'], startAt?: number) => Clip | null;
   updateClip: (clipId: string, patch: Partial<Clip>) => void;
@@ -46,7 +56,41 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   setPlayhead: (seconds) => set({ playhead: Math.max(0, seconds) }),
   setPlaying: (playing) => set({ playing }),
   selectClip: (selectedClipId) => set({ selectedClipId }),
-  toggleEdgeMode: (id) => set((state) => ({ edgeModes: { ...state.edgeModes, [id]: state.edgeModes[id] === 'trim' ? 'speed' : 'trim' } })),
+  toggleEdgeMode: (id) => set((state) => ({ edgeModes: { ...state.edgeModes, [id]: state.edgeModes[id] === 'speed' ? 'trim' : 'speed' } })),
+  setEdgeMode: (id, mode) => set((state) => ({ edgeModes: { ...state.edgeModes, [id]: mode } })),
+  duplicateClip: (clipId) => {
+    const state = get();
+    for (const track of state.timeline.tracks) {
+      const source = track.clips.find((clip) => clip.id === clipId);
+      if (!source) continue;
+      const duration = clipTimelineDuration(source);
+      const copy: Clip = { ...source, id: crypto.randomUUID(), startAt: source.startAt + duration };
+      set({
+        timeline: { ...state.timeline, tracks: state.timeline.tracks.map((item) => item.id === track.id ? { ...item, clips: sortClips([...item.clips, copy]) } : item) },
+        selectedClipId: copy.id,
+      });
+      return copy.id;
+    }
+    return null;
+  },
+  /** 把播放头所在位置切成两段：光标在哪边，新选中的就是哪一段。 */
+  splitSelected: (seconds) => get().splitAt(seconds),
+  toggleClipMuted: (clipId) => set((state) => ({
+    timeline: { ...state.timeline, tracks: state.timeline.tracks.map((track) => ({ ...track, clips: track.clips.map((clip) => clip.id === clipId ? { ...clip, audioMode: clip.audioMode === 'mute' ? 'keep' : 'mute' } : clip) })) },
+  })),
+  toggleClipEnabled: (clipId) => set((state) => ({
+    timeline: { ...state.timeline, tracks: state.timeline.tracks.map((track) => ({ ...track, clips: track.clips.map((clip) => clip.id === clipId ? { ...clip, enabled: !clip.enabled } : clip) })) },
+  })),
+  addTrack: (kind) => set((state) => {
+    const sameKind = state.timeline.tracks.filter((track) => track.kind === kind);
+    const track: Track = { id: crypto.randomUUID(), kind, index: sameKind.length, muted: false, locked: false, clips: [] };
+    // 视频轨放在贴图轨之前，保持「主轨在上、叠加层在下」的直觉顺序
+    const tracks = kind === 'video'
+      ? [...state.timeline.tracks.filter((item) => item.kind === 'video'), track, ...state.timeline.tracks.filter((item) => item.kind !== 'video')]
+      : [...state.timeline.tracks, track];
+    return { timeline: { ...state.timeline, tracks } };
+  }),
+  removeTrack: (trackId) => set((state) => ({ timeline: { ...state.timeline, tracks: state.timeline.tracks.filter((track) => track.id !== trackId) } })),
   setZoom: (zoom) => set({ zoom: Math.min(400, Math.max(8, zoom)) }),
 
   addClip: (asset, trackKind = 'video', startAt) => {

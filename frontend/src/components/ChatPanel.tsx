@@ -59,26 +59,21 @@ export function ChatPanel({ root, promptDraft, onInsertToCanvas }: Props) {
     setSending(true);
     setVisionHint('');
     try {
-      // 有图片时按 OpenAI 兼容的多模态格式发送。DeepSeek 目前不读图，
-      // 后端会返回空内容，这里明确告知并退回纯文字，不假装读到了图。
+      // 有图片时按官方文档的多模态格式发送（deepseek-flash 支持读图）。
+      // 注意不要把 max_tokens 设得太小：模型会先写推理内容，预算不够时正文会是空的。
       const content: ChatMessage['content'] | Array<Record<string, unknown>> = images.length
         ? [
-          ...(text ? [{ type: 'text', text }] : []),
-          ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+          ...(text ? [{ type: 'text', text }] : [{ type: 'text', text: '看看这张图，用一句话描述。' }]),
+          ...images.map((url) => ({ type: 'image_url', image_url: { url, detail: 'high' } })),
         ]
         : text;
       const payload = [{ role: 'system' as const, content: SYSTEM_PROMPT }, ...next.map((item, index) => ({ role: item.role, content: index === next.length - 1 ? content : item.content }))] as ChatMessage[];
-      let reply = await sendChat(payload, undefined, root);
-      if (images.length && !reply.content.trim()) {
-        setVisionHint('当前 DeepSeek 模型不能读图（接口返回空内容），已改为只按文字回答。要读图请换支持视觉的模型或在提示词里描述画面。');
-        reply = await sendChat([{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: text || '（我上传了一张图片，但当前模型无法读取，请告诉我需要补充哪些文字描述。）' }], undefined, root);
-      }
-      setMessages((list) => [...list, { id: crypto.randomUUID(), role: 'assistant', content: reply.content, images: reply.content ? undefined : [] }]);
+      const reply = await sendChat(payload, undefined, root);
+      setMessages((list) => [...list, { id: crypto.randomUUID(), role: 'assistant', content: reply.content }]);
       refreshStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : '发送失败';
-      if (images.length) setVisionHint(message);
-      else setMessages((list) => [...list, { id: crypto.randomUUID(), role: 'assistant', content: message, error: true }]);
+      setMessages((list) => [...list, { id: crypto.randomUUID(), role: 'assistant', content: message, error: true }]);
     } finally {
       setSending(false);
     }
