@@ -20,7 +20,7 @@ import { cancelJob, deleteJob, enqueueJob, getJob, listJobs, restoreJobs, toolSt
 import { renderStatusPage } from './status-page.js';
 
 const DEFAULT_ROOT = process.env.CANVORA_WORKSPACE ?? 'F:/Canvora';
-const snapshotVersion = '0.0.1';
+const snapshotVersion = '0.0.2';
 const STARTED_AT = Date.now();
 const rootOf = (request: { query?: unknown; body?: unknown }): string => { const source = (request.query ?? request.body ?? {}) as { root?: string }; return source.root ?? DEFAULT_ROOT; };
 
