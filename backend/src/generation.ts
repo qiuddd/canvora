@@ -14,10 +14,16 @@ export interface GenerationResult { kind: 'image' | 'text' | 'video'; assetIds?:
 const json = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
 const getString = (value: unknown): string | undefined => typeof value === 'string' && value ? value : undefined;
 
-async function call(ctx: GenerationContext, path: string, body: unknown, timeout = 180_000): Promise<Record<string, unknown>> {
+async function call(ctx: GenerationContext, path: string, body: unknown, timeout = 180_000, method: 'GET' | 'POST' = 'POST', extraHeaders: Record<string, string> = {}): Promise<Record<string, unknown>> {
   let response: Response;
-  try { response = await fetch(`${ctx.provider.baseUrl.replace(/\/$/, '')}${path}`, { method: 'POST', headers: { Authorization: `Bearer ${ctx.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) }); }
-  catch (error) { throw new AppError('unreachable', '无法连接服务商接口，请检查网络和服务商地址', error instanceof Error ? error.message : String(error), 502); }
+  try {
+    response = await fetch(`${ctx.provider.baseUrl.replace(/\/$/, '')}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${ctx.key}`, Accept: 'application/json', ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}), ...extraHeaders },
+      ...(method === 'POST' ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(timeout),
+    });
+  } catch (error) { throw new AppError('unreachable', '无法连接服务商接口，请检查网络和服务商地址', error instanceof Error ? error.message : String(error), 502); }
   const text = await response.text();
   if (!response.ok) throw new AppError(response.status === 401 ? 'invalid-key' : 'provider', response.status === 401 ? '服务商密钥无效' : `服务商接口返回错误（${response.status}）`, text, response.status);
   try { return json(JSON.parse(text)); } catch { throw new AppError('provider', '服务商返回内容无法解析', text); }
@@ -34,18 +40,25 @@ export function parseImageResults(payload: Record<string, unknown>): Array<{ url
 async function downloadResult(root: string, projectId: string, result: { url?: string; base64?: string; mime?: string }, kind: 'image' | 'video'): Promise<string> {
   const state = await ensureWorkspace(root);
   const ext = kind === 'video' ? '.mp4' : result.mime?.includes('png') ? '.png' : '.jpg';
-  const target = join(state.root, 'projects', projectId, 'assets', `${nanoid()}${ext}`);
-  await mkdir(join(state.root, 'projects', projectId, 'assets'), { recursive: true });
+  const assetDir = join(state.root, 'projects', projectId, 'assets');
+  const target = join(assetDir, `${nanoid()}${ext}`);
+  await mkdir(assetDir, { recursive: true });
   if (result.base64) await writeFile(target, Buffer.from(result.base64.replace(/^data:[^;]+;base64,/, ''), 'base64'));
   else {
     if (!result.url || !/^https?:\/\//i.test(result.url)) throw new AppError('provider', '服务商返回了不安全的结果地址');
     let response: Response;
-    try { response = await fetch(result.url, { signal: AbortSignal.timeout(180_000) }); } catch (error) { throw new AppError('unreachable', '下载生成结果失败，请稍后重试', error instanceof Error ? error.message : String(error), 502); }
+    try {
+      response = await fetch(result.url, { signal: AbortSignal.timeout(180_000) });
+    } catch (error) { throw new AppError('unreachable', '下载生成结果失败，请稍后重试', error instanceof Error ? error.message : String(error), 502); }
     if (!response.ok) throw new AppError('provider', '下载生成结果失败', `${response.status} ${result.url}`, response.status);
+    const contentLength = Number(response.headers.get('content-length') ?? 0);
+    if (contentLength > 2 * 1024 * 1024 * 1024) throw new AppError('provider', '生成结果超过 2 GB，已拒绝写入');
     const bytes = Buffer.from(await response.arrayBuffer());
     if (!bytes.length) throw new AppError('provider', '服务商返回的结果文件为空');
     await writeFile(target, bytes);
   }
+  const statResult = await stat(target);
+  if (!statResult.size) throw new AppError('provider', '服务商返回的结果文件为空');
   const asset = await registerGeneratedAsset(root, projectId, target, kind === 'video' ? 'AI 生成视频.mp4' : `AI 生成图片${ext}`, kind === 'video' ? 'exported' : 'exportedFrame');
   return asset.id;
 }
@@ -60,7 +73,7 @@ export async function submit(ctx: GenerationContext): Promise<{ taskId?: string;
 
 export async function poll(ctx: GenerationContext, remoteTaskId: string): Promise<Record<string, unknown>> {
   const path = ctx.provider.protocol === 'zhipu-video' ? `/videos/generations/${encodeURIComponent(remoteTaskId)}` : `/tasks/${encodeURIComponent(remoteTaskId)}`;
-  return call({ ...ctx, request: ctx.request }, path, {}, 60_000);
+  return call({ ...ctx, request: ctx.request }, path, undefined, 60_000, 'GET');
 }
 
 export async function execute(request: GenerationRequest, provider: Provider): Promise<GenerationResult> {

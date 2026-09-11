@@ -58,7 +58,15 @@ node scripts/fetch-tools.mjs --only=rife --from-file=D:/下载/rife-ncnn-vulkan-
 
 没有装工具时，放大/补帧任务会立刻失败并给出中文提示，不会假装成功。界面底部状态栏实时显示工具是否就绪。
 
-## 接入 DeepSeek
+## 云端 AI Provider 扩展
+
+云端生成入口统一在 `backend/src/generation.ts`。服务商配置写入工作区 `providers.json`，密钥通过 `secrets.ts` 的 AES-256-GCM 加密存储，适配器只调用 `readSecret`，不得把密钥返回前端或写日志。
+
+目前协议入口包括：`openai-images`、`openai-compatible`、`dashscope-image`、`dashscope-video`、`zhipu-image`、`zhipu-video`、`minimax-video`。新增服务商时应补充 `ProviderPreset`、请求体映射、异步任务状态字段和结果 URL 提取，并为 `url`、`b64_json`、`base64` 三类图片返回做测试。生成结果必须下载到当前项目 `assets/` 后再登记，禁止公共图床中转。
+
+接口：`POST /api/generation/image`、`POST /api/generation/video`、`POST /api/generation/text`、`POST /api/generation/:id/cancel`。视频任务写入 `tasks.json`，后端轮询后更新状态并登记素材；应用重启后的云端任务恢复和服务商特定取消接口仍是后续增强项。
+
+
 
 密钥只在后端读取，前端永远拿不到明文。保存路径：工作区 `secrets.json`（AES-256-GCM + 每工作区独立派生密钥）。
 接口：`PUT /api/chat/key` 保存、`POST /api/chat/test` 测试、`POST /api/chat` 对话、`GET /api/chat/status` 查询状态。
