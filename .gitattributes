@@ -1,0 +1,20 @@
+# 批处理脚本必须是 CRLF 换行，否则 cmd.exe 会把行解析坏（中文注释更会直接乱码）。
+# 这两个脚本另外用 GBK 编码保存，匹配中文 Windows 的默认代码页 936。
+*.bat text eol=crlf
+
+# 其余文本文件统一 LF，避免跨机器出现无意义差异。
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.mjs text eol=lf
+
+# 二进制文件不做换行转换。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.mp4 binary
+*.cube binary

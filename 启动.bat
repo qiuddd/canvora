@@ -1,50 +1,71 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 setlocal
-cd /d "%~dp0"
+set "ROOT=%~dp0"
+cd /d "%ROOT%"
 
 echo ============================================
-echo   Canvora å¯åŠ¨
+echo   Canvora Æô¶¯
 echo ============================================
+echo.
 
-if not exist node_modules (
-  echo [1/4] é¦–æ¬¡è¿è¡Œï¼Œæ­£åœ¨å®‰è£…ä¾èµ–ï¼ˆå¯èƒ½éœ€è¦å‡ åˆ†é’Ÿï¼‰...
+where npm >nul 2>&1
+if errorlevel 1 (
+  echo ÕÒ²»µ½ npm ÃüÁî¡£ÇëÏÈ°²×° Node.js 22£¬×°ºÃºóÖØÐÂË«»÷±¾½Å±¾¡£
+  echo ÏÂÔØµØÖ·£ºhttps://nodejs.org/
+  echo.
+  pause
+  exit /b 1
+)
+
+if not exist "node_modules" (
+  echo [1/4] Ê×´ÎÔËÐÐ£¬ÕýÔÚ°²×°ÒÀÀµ£¬¿ÉÄÜÐèÒª¼¸·ÖÖÓ...
   call npm install
-  if errorlevel 1 (echo ä¾èµ–å®‰è£…å¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œåŽé‡è¯• & pause & exit /b 1)
+  if errorlevel 1 (
+    echo.
+    echo ÒÀÀµ°²×°Ê§°Ü£¬Çë¼ì²éÍøÂçºóÖØÊÔ¡£
+    echo Èç¹ûÍøÂçÊÜÏÞ£¬¿ÉÒÔÏÈÆô¶¯´úÀíÔÙÔËÐÐ±¾½Å±¾¡£
+    echo.
+    pause
+    exit /b 1
+  )
 ) else (
-  echo [1/4] ä¾èµ–å·²å°±ç»ª
+  echo [1/4] ÒÀÀµÒÑ¾ÍÐ÷
 )
 
-if not exist F:\Canvora\bin\realesrgan-ncnn-vulkan.exe (
-  echo      æç¤ºï¼šè¿˜æ²¡æœ‰å®‰è£…æ”¾å¤§å·¥å…· Real-ESRGANï¼Œæ”¾å¤§åŠŸèƒ½ä¼šå¤±è´¥ã€‚
-  echo      è¿è¡Œ node scripts/fetch-tools.mjs --proxy=http://127.0.0.1:7897 å¯è‡ªåŠ¨ä¸‹è½½ã€‚
+if not exist "F:\Canvora\bin\realesrgan-ncnn-vulkan.exe" (
+  echo      ÌáÊ¾£º»¹Ã»ÓÐ°²×°·Å´ó¹¤¾ß Real-ESRGAN£¬·Å´ó¹¦ÄÜ»áÊ§°Ü¡£
+  echo      ¿ÉÔËÐÐ node scripts\fetch-tools.mjs --proxy=http://127.0.0.1:7897 ×Ô¶¯ÏÂÔØ¡£
 )
 
-echo [2/4] å¯åŠ¨åŽç«¯æœåŠ¡ï¼ˆ127.0.0.1:8787ï¼‰
-start "Canvora åŽç«¯" cmd /k "cd /d %~dp0 && npm run dev:backend"
+echo [2/4] Æô¶¯ºó¶Ë·þÎñ 127.0.0.1:8787
+start "Canvora ºó¶Ë" /D "%ROOT%" cmd /k "npm run dev:backend"
 
-echo [3/4] ç­‰å¾…åŽç«¯å°±ç»ª...
+echo [3/4] µÈ´ýºó¶Ë¾ÍÐ÷...
 set /a tries=0
 :waitloop
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 set /a tries+=1
-curl -s -o nul http://127.0.0.1:8787/api/health
+node -e "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >nul 2>&1
 if errorlevel 1 (
-  if %tries% lss 20 goto waitloop
-  echo      åŽç«¯å¯åŠ¨è¶…æ—¶ï¼Œè¯·çœ‹"Canvora åŽç«¯"çª—å£é‡Œçš„æŠ¥é”™ã€‚
+  if %tries% lss 25 goto waitloop
+  echo.
+  echo      ºó¶ËÆô¶¯³¬Ê±¡£Çë²é¿´ "Canvora ºó¶Ë" ´°¿ÚÀïµÄ±¨´í¡£
+  echo      ³£¼ûÔ­Òò£º¶Ë¿Ú 8787 ±»Õ¼ÓÃ£¬»òÕßÒÀÀµÃ»ÓÐ×°ºÃ¡£
+  echo.
 )
 
-echo [4/4] å¯åŠ¨å‰ç«¯å¹¶æŠŠæµè§ˆå™¨æ‰“å¼€
-start "Canvora å‰ç«¯" cmd /k "cd /d %~dp0 && npm run dev:frontend"
-timeout /t 4 /nobreak >nul
+echo [4/4] Æô¶¯Ç°¶Ë²¢´ò¿ªä¯ÀÀÆ÷
+start "Canvora Ç°¶Ë" /D "%ROOT%" cmd /k "npm run dev:frontend"
+ping -n 6 127.0.0.1 >nul
 start "" "http://127.0.0.1:5173"
 
 echo.
-echo å·²å¯åŠ¨ï¼š
-echo   å‰ç«¯ç•Œé¢  http://127.0.0.1:5173
-echo   åŽç«¯çŠ¶æ€  http://127.0.0.1:8787   ï¼ˆå¯ä»¥åœ¨è¿™é‡ŒæŸ¥çœ‹çŠ¶æ€å’Œå…³é—­åŽç«¯ï¼‰
+echo ÒÑÆô¶¯£º
+echo   Ç°¶Ë½çÃæ  http://127.0.0.1:5173
+echo   ºó¶Ë¹ÜÀí  http://127.0.0.1:8787    ^(ÔÚÕâÀïÅäÖÃ AI ·þÎñÉÌºÍÃÜÔ¿^)
 echo.
-echo å…³é—­æ–¹å¼ï¼šåŒå‡» å…³é—­.batï¼Œæˆ–ç›´æŽ¥å…³æŽ‰é‚£ä¸¤ä¸ªå‘½ä»¤è¡Œçª—å£ã€‚
+echo ¹Ø±Õ·½Ê½£ºË«»÷ ¹Ø±Õ.bat£¬»òÕßÖ±½Ó¹ØµôÄÇÁ½¸öÃüÁîÐÐ´°¿Ú¡£
 echo.
 pause
 endlocal

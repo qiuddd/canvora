@@ -1,38 +1,42 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 setlocal
 cd /d "%~dp0"
 
 echo ============================================
-echo   Canvora å…³é—­
+echo   Canvora ¹Ø±Õ
 echo ============================================
 echo.
-echo è¿™ä¼šå…³æŽ‰æœ¬æœºæ­£åœ¨è¿è¡Œçš„ Canvora åŽç«¯ä¸Žå‰ç«¯ã€‚
-echo å¦‚æžœæœ‰æ”¾å¤§/è¡¥å¸§ä»»åŠ¡åœ¨è·‘ï¼Œä¼šè¢«ä¸­æ–­ã€‚
+echo Õâ»á¹Øµô±¾»úÕýÔÚÔËÐÐµÄ Canvora ºó¶ËÓëÇ°¶Ë¡£
+echo Èç¹ûÓÐ·Å´ó»ò²¹Ö¡ÈÎÎñÔÚÅÜ£¬»á±»ÖÐ¶Ï¡£
 echo.
-choice /c YN /n /m "ç¡®å®šå…³é—­å—ï¼Ÿ(Y/N) "
-if errorlevel 2 (echo å·²å–æ¶ˆ & timeout /t 2 >nul & exit /b 0)
+choice /c YN /n /m "È·¶¨¹Ø±ÕÂð£¿(Y/N) "
+if errorlevel 2 (
+  echo ÒÑÈ¡Ïû¡£
+  ping -n 3 127.0.0.1 >nul
+  exit /b 0
+)
 
 echo.
-echo [1/3] é€šçŸ¥åŽç«¯æ­£å¸¸é€€å‡ºï¼ˆä¼šæ¸…ç†æ­£åœ¨è¿è¡Œçš„ä»»åŠ¡çŠ¶æ€ï¼‰
+echo [1/3] Í¨Öªºó¶ËÕý³£ÍË³ö
 curl -s -X POST http://127.0.0.1:8787/api/shutdown >nul 2>&1
-timeout /t 2 /nobreak >nul
+ping -n 3 127.0.0.1 >nul
 
-echo [2/3] å…³é—­å ç”¨ 8787ï¼ˆåŽç«¯ï¼‰å’Œ 5173ï¼ˆå‰ç«¯ï¼‰çš„è¿›ç¨‹
+echo [2/3] ¹Ø±ÕÕ¼ÓÃ 8787£¨ºó¶Ë£©ºÍ 5173£¨Ç°¶Ë£©µÄ½ø³Ì
 for %%P in (8787 5173) do (
   for /f "tokens=5" %%A in ('netstat -ano ^| findstr ":%%P" ^| findstr "LISTENING"') do (
     taskkill /F /T /PID %%A >nul 2>&1
-    if not errorlevel 1 echo      å·²å…³é—­ç«¯å£ %%P ä¸Šçš„è¿›ç¨‹ %%A
+    if not errorlevel 1 echo      ÒÑ¹Ø±Õ¶Ë¿Ú %%P ÉÏµÄ½ø³Ì %%A
   )
 )
 
-echo [3/3] æ¸…ç†æ®‹ç•™çš„ ffmpeg / realesrgan / rife å­è¿›ç¨‹
+echo [3/3] ÇåÀí²ÐÁôµÄ ffmpeg / realesrgan / rife ×Ó½ø³Ì
 taskkill /F /IM ffmpeg.exe >nul 2>&1
 taskkill /F /IM realesrgan-ncnn-vulkan.exe >nul 2>&1
 taskkill /F /IM rife-ncnn-vulkan.exe >nul 2>&1
-echo      å·²æ¸…ç†
+echo      ÒÑÇåÀí
 
 echo.
-echo å·²å…³é—­ã€‚é‡æ–°å¯åŠ¨è¯·åŒå‡» å¯åŠ¨.batã€‚
-timeout /t 3 >nul
+echo ÒÑ¹Ø±Õ¡£ÖØÐÂÆô¶¯ÇëË«»÷ Æô¶¯.bat¡£
+ping -n 4 127.0.0.1 >nul
 endlocal
