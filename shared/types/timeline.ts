@@ -23,6 +23,23 @@ export interface Overlay {
   fadeOutSec: number;
 }
 
+/**
+ * 贴图轨片段的摆放属性（仅贴图轨的图片片段使用）。
+ * 坐标和宽度都是相对成片画面的归一化值，预览与导出共用同一套语义。
+ */
+export interface OverlayLayout {
+  x: number;            // 归一化左上角坐标 0~1
+  y: number;
+  widthRatio: number;   // 宽度占画面比例 0~1
+  opacity: number;      // 0~1
+  fadeInSec: number;    // 贴图窗口起点处的淡入时长
+  fadeOutSec: number;   // 贴图窗口终点处的淡出时长
+}
+
+export const defaultOverlayLayout = (): OverlayLayout => ({
+  x: 0.66, y: 0.08, widthRatio: 0.28, opacity: 1, fadeInSec: 0, fadeOutSec: 0,
+});
+
 export interface Clip {
   id: string;
   assetId: string;
@@ -34,6 +51,8 @@ export interface Clip {
   audioMode: 'keep' | 'mute' | 'keepPitchCorrected';
   colorGrade?: ColorGrade;
   overlays?: Overlay[];
+  /** 贴图轨片段的摆放属性；主轨/音频轨片段没有这个字段。 */
+  layout?: OverlayLayout;
   enabled: boolean;
 }
 
@@ -68,6 +87,8 @@ export function timelineDuration(timeline: Timeline): number {
 /** 提交给后端滤镜图编译器的结构：片段里的素材已经换成真实文件路径。 */
 export interface EdlClip {
   path: string;
+  /** 素材类型：图片片段导出时要按静止画面循环输入（-loop 1），视频按原样输入。 */
+  kind?: 'image' | 'video';
   inPoint: number;
   outPoint: number;
   startAt: number;

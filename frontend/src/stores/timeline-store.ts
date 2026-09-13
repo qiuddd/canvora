@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { Clip, Edl, EdlClip, ExportSettings, Timeline, Track } from '@canvora/shared';
-import { clipTimelineDuration, timelineDuration } from '@canvora/shared';
+import type { Clip, ColorGrade, Edl, EdlClip, ExportSettings, OverlayLayout, Timeline, Track } from '@canvora/shared';
+import { clipTimelineDuration, defaultOverlayLayout, timelineDuration } from '@canvora/shared';
 
 /** 时间轴状态独立于画布状态（AGENTS 硬约束：两个 store 不许混在一起）。 */
 interface TimelineState {
@@ -21,17 +21,24 @@ interface TimelineState {
   toggleEdgeMode: (id: string) => void;
   setEdgeMode: (id: string, mode: 'trim' | 'speed') => void;
   duplicateClip: (clipId: string) => string | null;
-  splitSelected: (seconds: number) => boolean;
   toggleClipMuted: (clipId: string) => void;
   toggleClipEnabled: (clipId: string) => void;
   addTrack: (kind: Track['kind']) => void;
   removeTrack: (trackId: string) => void;
   setZoom: (zoom: number) => void;
   addClip: (asset: { id: string; kind: string; durationSec?: number }, trackKind?: Track['kind'], startAt?: number) => Clip | null;
+  /** 拖动片段改位置：跨同类型轨道移动，落点吸附到最近的空隙，绝不与已有片段重叠。 */
+  moveClip: (clipId: string, targetTrackId: string, startAt: number) => void;
   updateClip: (clipId: string, patch: Partial<Clip>) => void;
+  setClipLayout: (clipId: string, patch: Partial<OverlayLayout>) => void;
+  setClipGrade: (clipId: string, patch: Partial<ColorGrade>) => void;
   removeClip: (clipId: string, ripple: boolean) => void;
   splitAt: (seconds: number) => boolean;
-  buildEdl: (resolvePath: (assetId: string) => string | null, resolveAudio: (assetId: string) => boolean) => Edl;
+  buildEdl: (
+    resolvePath: (assetId: string) => string | null,
+    resolveAudio: (assetId: string) => boolean,
+    resolveKind?: (assetId: string) => 'image' | 'video' | undefined,
+  ) => Edl;
 }
 
 const videoTrack = (): Track => ({ id: crypto.randomUUID(), kind: 'video', index: 0, muted: false, locked: false, clips: [] });
@@ -43,6 +50,9 @@ export const emptyTimeline = (projectId: string): Timeline => ({
 });
 
 const sortClips = (clips: Clip[]) => [...clips].sort((a, b) => a.startAt - b.startAt);
+
+/** 主视频轨：预览与导出都以它为成片序列（后端 EDL 是顺序拼接模型）。 */
+export const mainVideoTrackOf = (timeline: Timeline): Track | undefined => timeline.tracks.find((track) => track.kind === 'video');
 
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   timeline: emptyTimeline('local'),
@@ -64,17 +74,17 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       const source = track.clips.find((clip) => clip.id === clipId);
       if (!source) continue;
       const duration = clipTimelineDuration(source);
+      // 复制件放在源片段结束处；撞上后面的片段时由 addClip 同款推挤逻辑落到下一个空隙
       const copy: Clip = { ...source, id: crypto.randomUUID(), startAt: source.startAt + duration };
+      const placed = placeWithoutOverlap(copy, track.clips.filter((clip) => clip.id !== clipId));
       set({
-        timeline: { ...state.timeline, tracks: state.timeline.tracks.map((item) => item.id === track.id ? { ...item, clips: sortClips([...item.clips, copy]) } : item) },
+        timeline: { ...state.timeline, tracks: state.timeline.tracks.map((item) => item.id === track.id ? { ...item, clips: sortClips([...item.clips.filter((clip) => clip.id !== clipId), placed]) } : item) },
         selectedClipId: copy.id,
       });
       return copy.id;
     }
     return null;
   },
-  /** 把播放头所在位置切成两段：光标在哪边，新选中的就是哪一段。 */
-  splitSelected: (seconds) => get().splitAt(seconds),
   toggleClipMuted: (clipId) => set((state) => ({
     timeline: { ...state.timeline, tracks: state.timeline.tracks.map((track) => ({ ...track, clips: track.clips.map((clip) => clip.id === clipId ? { ...clip, audioMode: clip.audioMode === 'mute' ? 'keep' : 'mute' } : clip) })) },
   })),
@@ -99,27 +109,19 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     if (!track) return null;
     const duration = Math.max(0.2, asset.durationSec && asset.durationSec > 0 ? asset.durationSec : 5);
     const last = track.clips.reduce((max, clip) => Math.max(max, clip.startAt + clipTimelineDuration(clip)), 0);
-    let position = Math.max(0, startAt ?? last);
-    // 同一轨道上不许重叠：与已有片段相交时依次往右推到不重叠为止（PRD F2）
-    const overlaps = (candidate: number) => track.clips.some((clip) => candidate < clip.startAt + clipTimelineDuration(clip) - 1e-6 && candidate + duration > clip.startAt + 1e-6);
-    let guard = 0;
-    while (overlaps(position) && guard < 50) {
-      const blocker = track.clips
-        .filter((clip) => position < clip.startAt + clipTimelineDuration(clip) - 1e-6 && position + duration > clip.startAt + 1e-6)
-        .reduce((rightmost, clip) => Math.max(rightmost, clip.startAt + clipTimelineDuration(clip)), position);
-      position = blocker;
-      guard += 1;
-    }
-    const clip: Clip = {
+    const wanted: Clip = {
       id: crypto.randomUUID(),
       assetId: asset.id,
       inPoint: 0,
       outPoint: duration,
-      startAt: position,
+      startAt: Math.max(0, startAt ?? last),
       speed: 1,
       audioMode: 'keep',
       enabled: true,
+      // 贴图轨片段带默认摆放：右上角、28% 宽，可在预览里直接拖动微调
+      layout: trackKind === 'overlay' ? defaultOverlayLayout() : undefined,
     };
+    const clip = placeWithoutOverlap(wanted, track.clips);
     set({
       timeline: { ...state.timeline, tracks: state.timeline.tracks.map((item) => item.id === track.id ? { ...item, clips: sortClips([...item.clips, clip]) } : item) },
       selectedClipId: clip.id,
@@ -127,12 +129,53 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     return clip;
   },
 
+  moveClip: (clipId, targetTrackId, startAt) => set((state) => {
+    const source = state.timeline.tracks.find((track) => track.clips.some((clip) => clip.id === clipId));
+    if (!source) return {};
+    const target = state.timeline.tracks.find((track) => track.id === targetTrackId);
+    if (!target || target.kind !== source.kind) return {};
+    const clip = source.clips.find((item) => item.id === clipId);
+    if (!clip) return {};
+    const duration = clipTimelineDuration(clip);
+    const others = target.clips.filter((item) => item.id !== clipId);
+    const placed = placeWithoutOverlap({ ...clip, startAt: Math.max(0, startAt) }, others);
+    const tracks = state.timeline.tracks.map((track) => {
+      if (track.id === source.id && track.id === target.id) {
+        return { ...track, clips: sortClips([...track.clips.filter((item) => item.id !== clipId), placed]) };
+      }
+      if (track.id === source.id) return { ...track, clips: track.clips.filter((item) => item.id !== clipId) };
+      if (track.id === target.id) return { ...track, clips: sortClips([...track.clips, placed]) };
+      return track;
+    });
+    return { timeline: { ...state.timeline, tracks } };
+  }),
+
   updateClip: (clipId, patch) => set((state) => ({
     timeline: {
       ...state.timeline,
       tracks: state.timeline.tracks.map((track) => ({
         ...track,
         clips: sortClips(track.clips.map((clip) => clip.id === clipId ? { ...clip, ...patch } : clip)),
+      })),
+    },
+  })),
+
+  setClipLayout: (clipId, patch) => set((state) => ({
+    timeline: {
+      ...state.timeline,
+      tracks: state.timeline.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => clip.id === clipId ? { ...clip, layout: { ...(clip.layout ?? defaultOverlayLayout()), ...patch } } : clip),
+      })),
+    },
+  })),
+
+  setClipGrade: (clipId, patch) => set((state) => ({
+    timeline: {
+      ...state.timeline,
+      tracks: state.timeline.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => clip.id === clipId ? { ...clip, colorGrade: { ...(clip.colorGrade ?? {}), ...patch } } : clip),
       })),
     },
   })),
@@ -152,7 +195,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
 
   splitAt: (seconds) => {
     const state = get();
-    const track = state.timeline.tracks.find((item) => item.kind === 'video');
+    const track = mainVideoTrackOf(state.timeline);
     if (!track) return false;
     const target = track.clips.find((clip) => clip.enabled && seconds > clip.startAt + 0.05 && seconds < clip.startAt + clipTimelineDuration(clip) - 0.05);
     if (!target) return false;
@@ -173,15 +216,63 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     return true;
   },
 
-  buildEdl: (resolvePath, resolveAudio) => {
+  buildEdl: (resolvePath, resolveAudio, resolveKind) => {
     const state = get();
-    const track = state.timeline.tracks.find((item) => item.kind === 'video');
+    const mainTrack = mainVideoTrackOf(state.timeline);
+    const mainClips = sortClips((mainTrack?.clips ?? []).filter((item) => item.enabled));
+
+    // 成片（concat 输出）里每个主轨片段的起点：等于前面片段的时长之和。
+    // 片段之间的空白在导出时会被吃掉，所以贴图时间窗必须换算成输出时间，不能直接用时间轴时间。
+    let outputCursor = 0;
+    const outputStarts = new Map<string, number>();
+    for (const clip of mainClips) {
+      outputStarts.set(clip.id, outputCursor);
+      outputCursor += clipTimelineDuration(clip);
+    }
+
+    // 贴图轨片段 → 与它时间重叠的每个主轨片段各挂一条 overlay（enable 用成片绝对时间）
+    const overlaysByClip = new Map<string, NonNullable<EdlClip['overlays']>>();
+    for (const track of state.timeline.tracks) {
+      if (track.kind !== 'overlay') continue;
+      for (const overlayClip of track.clips) {
+        if (!overlayClip.enabled) continue;
+        const overlayPath = resolvePath(overlayClip.assetId);
+        if (!overlayPath) continue;
+        const layout = overlayClip.layout ?? defaultOverlayLayout();
+        const windowStart = overlayClip.startAt;
+        const windowEnd = overlayClip.startAt + clipTimelineDuration(overlayClip);
+        for (const clip of mainClips) {
+          const clipStart = clip.startAt;
+          const clipEnd = clip.startAt + clipTimelineDuration(clip);
+          const start = Math.max(windowStart, clipStart);
+          const end = Math.min(windowEnd, clipEnd);
+          if (end - start < 0.05) continue;
+          const outStart = outputStarts.get(clip.id) ?? 0;
+          overlaysByClip.set(clip.id, [
+            ...(overlaysByClip.get(clip.id) ?? []),
+            {
+              path: overlayPath,
+              x: layout.x,
+              y: layout.y,
+              widthRatio: layout.widthRatio,
+              opacity: layout.opacity,
+              startSec: outStart + (start - clipStart),
+              endSec: outStart + (end - clipStart),
+              fadeInSec: layout.fadeInSec,
+              fadeOutSec: layout.fadeOutSec,
+            },
+          ]);
+        }
+      }
+    }
+
     const clips: EdlClip[] = [];
-    for (const clip of sortClips((track?.clips ?? []).filter((item) => item.enabled))) {
+    for (const clip of mainClips) {
       const path = resolvePath(clip.assetId);
       if (!path) continue;
       clips.push({
         path,
+        kind: resolveKind ? resolveKind(clip.assetId) : undefined,
         inPoint: clip.inPoint,
         outPoint: clip.outPoint,
         startAt: clip.startAt,
@@ -189,15 +280,42 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
         hasAudio: resolveAudio(clip.assetId),
         audioMode: clip.audioMode,
         colorGrade: clip.colorGrade,
-        overlays: (clip.overlays ?? []).map((overlay) => {
-          const overlayPath = resolvePath(overlay.assetId) ?? '';
-          return { path: overlayPath, x: overlay.x, y: overlay.y, widthRatio: overlay.widthRatio, opacity: overlay.opacity, startSec: overlay.startSec, endSec: overlay.endSec, fadeInSec: overlay.fadeInSec, fadeOutSec: overlay.fadeOutSec };
-        }).filter((overlay) => overlay.path),
+        overlays: overlaysByClip.get(clip.id),
       });
     }
     return { fps: state.timeline.fps, width: state.timeline.width, height: state.timeline.height, backgroundColor: state.timeline.backgroundColor, clips };
   },
 }));
+
+/**
+ * 把片段放进一条轨道而不与已有片段重叠：目标位置落在占用区里时，
+ * 就近落到能容纳它的空隙（左边挤到前一段结束，或右边退到后一段开始）。
+ */
+function placeWithoutOverlap(wanted: Clip, others: Clip[]): Clip {
+  const duration = clipTimelineDuration(wanted);
+  const sorted = [...others].sort((a, b) => a.startAt - b.startAt);
+  const gaps: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const other of sorted) {
+    const otherEnd = other.startAt + clipTimelineDuration(other);
+    if (other.startAt - cursor > 1e-6) gaps.push({ start: cursor, end: other.startAt });
+    cursor = Math.max(cursor, otherEnd);
+  }
+  gaps.push({ start: cursor, end: Number.POSITIVE_INFINITY });
+  let best = Math.max(0, wanted.startAt);
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const gap of gaps) {
+    if (gap.end - gap.start < duration - 1e-6) continue;
+    const ceiling = Number.isFinite(gap.end) ? gap.end - duration : Math.max(wanted.startAt, gap.start);
+    const candidate = Math.min(Math.max(wanted.startAt, gap.start), ceiling);
+    const distance = Math.abs(candidate - wanted.startAt);
+    if (distance < bestDistance - 1e-9) {
+      bestDistance = distance;
+      best = Math.max(0, candidate);
+    }
+  }
+  return { ...wanted, startAt: best };
+}
 
 export const defaultExportSettings = (timeline: Timeline): ExportSettings => ({
   fileName: `导出-${new Date().toISOString().slice(0, 19).replace(/:/g, '')}.mp4`,

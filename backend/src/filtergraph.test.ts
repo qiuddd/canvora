@@ -46,7 +46,8 @@ test('compileEdl：片段数量、输入顺序与输出映射', () => {
     clip({ path: 'C:/x/a.mp4', inPoint: 0, outPoint: 4 }),
     clip({ path: 'C:/x/b.mp4', inPoint: 2, outPoint: 6, speed: 2 }),
   ]), settings());
-  assert.deepEqual(compiled.inputs, ['C:/x/a.mp4', 'C:/x/b.mp4']);
+  assert.deepEqual(compiled.inputs.map((input) => input.path), ['C:/x/a.mp4', 'C:/x/b.mp4']);
+  assert.equal(compiled.inputs.every((input) => input.imageDurationSec === undefined), true, '视频片段不需要图片循环');
   assert.match(compiled.filterGraph, /concat=n=2:v=1:a=1\[vcat\]\[acat\]/);
   assert.match(compiled.filterGraph, /\[v0\]/);
   assert.match(compiled.filterGraph, /\[v1\]/);
@@ -105,13 +106,35 @@ test('compileEdl：贴图接在 concat 之后，enable 的逗号转义，淡入�
     inPoint: 0, outPoint: 10,
     overlays: [{ path: 'C:/x/logo.png', x: 0.8, y: 0.85, widthRatio: 0.2, opacity: 1, startSec: 3, endSec: 8, fadeInSec: 1, fadeOutSec: 0.5 }],
   })]), settings({ width: 1000, height: 500 }));
-  assert.deepEqual(compiled.inputs, ['C:/Canvora/projects/p1/assets/a.mp4', 'C:/x/logo.png']);
+  assert.deepEqual(compiled.inputs.map((input) => input.path), ['C:/Canvora/projects/p1/assets/a.mp4', 'C:/x/logo.png']);
+  // 贴图是图片：循环到窗口结束 + 淡出 + 0.5 秒余量（未超成片总长 10 秒时取全值）
+  assert.deepEqual(compiled.inputs[1], { path: 'C:/x/logo.png', imageDurationSec: 9, imageFramerate: 30 });
   assert.match(compiled.filterGraph, /between\(t\\,3\\,8\)/);
   assert.match(compiled.filterGraph, /\[1:v\]scale=200:-2,format=rgba,fade=in:st=3:d=1:alpha=1,fade=out:st=7\.5:d=0\.5:alpha=1\[ov1\]/);
   assert.match(compiled.filterGraph, /\[vcat\]\[ov1\]overlay=800:425:enable='between\(t\\,3\\,8\)'\[vo1\]/);
   assert.deepEqual(compiled.maps, ['-map', '[vo1]', '-map', '[acat]']);
   // concat 必须出现在贴图之前
   assert.ok(compiled.filterGraph.indexOf('concat=n=1') < compiled.filterGraph.indexOf('[ov1]overlay='));
+});
+
+test('compileEdl：图片片段标记成图片输入，循环时长按变速后的时间轴时长算', () => {
+  const compiled = compileEdl(edl([
+    clip({ path: 'C:/x/pic.png', kind: 'image', inPoint: 0, outPoint: 5, speed: 1, hasAudio: false }),
+    clip({ path: 'C:/x/pic2.png', kind: 'image', inPoint: 0, outPoint: 8, speed: 2, hasAudio: false }),
+  ]), settings());
+  assert.deepEqual(compiled.inputs, [
+    { path: 'C:/x/pic.png', imageDurationSec: 5, imageFramerate: 30 },
+    { path: 'C:/x/pic2.png', imageDurationSec: 4, imageFramerate: 30 },
+  ]);
+});
+
+test('compileEdl：贴图循环不超过成片总长（否则 overlay 跟随最长输入，尾部多冻结帧）', () => {
+  // 成片总长 6 秒，贴图窗口 4→6 + 淡出 0.5 + 余量 0.5 = 7.5，被钳到 6
+  const compiled = compileEdl(edl([clip({
+    inPoint: 0, outPoint: 6,
+    overlays: [{ path: 'C:/x/logo.png', x: 0.5, y: 0.5, widthRatio: 0.2, opacity: 1, startSec: 4, endSec: 6, fadeInSec: 0, fadeOutSec: 0.5 }],
+  })]), settings());
+  assert.equal(compiled.inputs[1].imageDurationSec, 6);
 });
 
 test('compileEdl：LUT 路径换正斜杠、盘符冒号转义并加引号（否则冒号会把滤镜切开）', () => {

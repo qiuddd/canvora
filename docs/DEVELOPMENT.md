@@ -16,12 +16,12 @@
   - `ports.ts`：节点端口模型（每个节点类型的输入/输出口），连线校验都读这里。
   - `CanvasNodeView.tsx`：节点渲染，只有标题栏能拖动节点。
   - `node-catalog.ts`：右键菜单的节点清单。
-- `frontend/src/components/`：ProjectGate、AssetLibrary、ChatPanel、JobsPanel、CanvasContextMenu。
-- `frontend/src/stores/`：画布状态（zustand）。
+- `frontend/src/components/`：ProjectGate、AssetLibrary、ChatPanel、JobsPanel、CanvasContextMenu、TimelinePanel。
+- `frontend/src/stores/`：画布状态与时间轴状态（zustand）。**两个 store 不许混在一起**。
 - `backend/src/workspace.ts`：工作区、项目、素材、分组、画布快照。**所有写操作都走 `mutateWorkspace` 串行锁**。
-- `backend/src/jobs.ts`：本地批量任务（抽帧 / 图片放大 / 视频放大 / 视频补帧），全局串行。
+- `backend/src/jobs.ts`：本地批量任务（抽帧 / 图片放大 / 视频放大 / 视频补帧 / 时间轴导出），全局串行。
 - `backend/src/chat.ts`：DeepSeek 对话，密钥只在服务端读取。
-- `backend/src/media/`：ffmpeg / ffprobe 参数构造与子进程封装。
+- `backend/src/media/`：ffmpeg / ffprobe 参数构造与子进程封装（含 HTTP Range 解析，有单测）。
 - `backend/src/filtergraph.ts`：变速与滤镜图编译器（有单测）。
 
 ## 数据存放
@@ -45,6 +45,15 @@
 - 浏览器里的 `File` 对象**没有** `path` 属性（那是 Electron 专有），上传必须走字节流，不能读本地路径。
 - 连线手势的监听在挂载时注册一次并用 ref 读取最新状态；放进 `useEffect([connecting])` 会让快速拖拽丢 pointerup。
 - 尾帧导出用「ffprobe 取时长 D → `-ss (D-0.04)` 放在 `-i` 之后」，不要用 `-sseof -0.1`。
+
+## 时间轴剪辑（2026-09-13 重写后）
+
+- **EDL 是顺序 concat 模型**：导出成片 = 主视频轨（第一条视频轨）的片段依序相连，`startAt` 不参与导出，片段之间的空隙会被剪掉；贴图轨片段转换成与主轨片段时间重叠的 `overlays` 条目，时间窗必须换算到**成片输出时间**（空白被剪掉后时间轴时间和成片时间不一致）。
+- **素材文件接口必须支持 HTTP Range**（`server.ts` 的 `/api/assets/:id/file`，206 分段传输）。没有 Range 时浏览器把视频当不可 seek 的流（`seekable=[[0,0]]`），预览拖进度条、暂停定位全部失效——v0.0.3 前的真实 bug。
+- **预览是混合时钟**：播放时视频片段以 `<video>` 时钟推进播放头（帧级同步）；变速超出 0.25x~4x、图片片段、空隙用真实时间推进并周期纠偏。暂停时把视频 seek 到播放头。`<video>` 只换 src 不重挂载，元数据加载完再定位（`desiredSourceTimeRef`）。
+- **图片输入必须 `-loop 1`**：主轨图片片段和贴图输入都按 `-loop 1 -framerate <fps> -t 时长` 传给 ffmpeg，否则整段只有 1 帧（音画错位、贴图淡入淡出全透明）。贴图循环时长以成片总长为上限，否则 overlay 跟随最长输入会在尾部多冻结帧。
+- 片段拖动落点由 store 的 `placeWithoutOverlap` 统一钳制：目标位置落在占用区时就近落进能容纳它的空隙，任何操作都不会产生重叠片段。
+- 快捷键归属：时间轴展开时**空格 = 播放/暂停、Delete = 删片段**（App 层让位）；时间轴收起时空格仍是画布平移。
 
 ## 本地 AI 工具（放大 / 补帧）
 
@@ -93,8 +102,10 @@ node scripts/fetch-tools.mjs --only=rife --from-file=D:/下载/rife-ncnn-vulkan-
 ## 开发检查
 
 ```bash
-npm run typecheck
-npm run build
-npm run build --workspace backend
-npm test --workspace backend   # 注意：node --test 跑 dist，要先 build
+npm run typecheck                    # 三个 workspace 全部类型检查
+npm run build                        # 前端构建
+npm run build --workspace backend    # 后端编译到 dist
+npm test                             # 全部 workspace；后端跑的是 dist 里的测试，改完后端要先 build
+# 只跑后端源码测试（不依赖 dist）：
+node --test --import tsx "backend/src/*.test.ts"
 ```

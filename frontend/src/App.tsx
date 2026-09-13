@@ -343,7 +343,10 @@ export function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return;
+      if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.isContentEditable) return;
+      // 时间轴打开时快捷键让位给剪辑：空格是播放/暂停，Delete 优先删选中的片段，空格不再触发画布平移
+      if (timelineOpen && event.code === 'Space') return;
+      if (timelineOpen && (event.key === 'Delete' || event.key === 'Backspace') && useTimelineStore.getState().selectedClipId) return;
       if (event.code === 'Space') { event.preventDefault(); setSpaceHeld(true); return; }
       const meta = event.ctrlKey || event.metaKey;
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeIds.length) deleteSelection();
@@ -365,7 +368,7 @@ export function App() {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [createNodeGroup, deleteSelection, duplicateSelection, nodes, selectedNodeIds, setSelection]);
+  }, [createNodeGroup, deleteSelection, duplicateSelection, nodes, selectedNodeIds, setSelection, timelineOpen]);
 
   const onCanvasPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     // 中键、Alt+左键、或按住空格：平移。空格是多数专业工具的习惯按键。
@@ -566,6 +569,7 @@ export function App() {
         return asset ? `${root.replace(/\/$/, '')}/${asset.relPath}` : null;
       },
       (assetId) => Boolean(assetMap.get(assetId)?.hasAudio),
+      (assetId) => assetMap.get(assetId)?.kind === 'image' ? 'image' : 'video',
     );
     if (!edl.clips.length) { setNotice('时间轴还没有片段，先把素材拖到轨道上'); return; }
     try {
@@ -780,7 +784,7 @@ export function App() {
     <footer className="timeline-shell">
       <div className="timeline-header">
         <span>时间轴</span>
-        <span className="muted">拖素材到轨道 · 拖片段边缘变速 · S 分割 · Delete 删除 · 空格播放</span>
+        <span className="muted">拖素材到轨道 · 拖片段移动位置 · 拖边缘裁剪/变速 · S 分割 · Delete 删除 · 空格播放</span>
         <button className="small-button" onClick={() => setTimelineOpen((value) => !value)}>{timelineOpen ? '收起' : '展开'}</button>
       </div>
       {timelineOpen && <TimelinePanel

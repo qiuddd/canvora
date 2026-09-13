@@ -1,6 +1,6 @@
 {
   "name": "canvora",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "**一个跑在你自己的 Windows 电脑上的无限画布 + AI 创作 + 视频剪辑工作台。**",
   "main": "index.js",
   "scripts": {

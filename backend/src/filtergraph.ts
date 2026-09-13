@@ -69,8 +69,12 @@ export interface CompileOptions { graphFile?: string }
 
 export interface CompiledEdl {
   filterGraph: string;
-  /** 按顺序传给 ffmpeg 的输入文件（先是各片段，再是各贴图）。 */
-  inputs: string[];
+  /**
+   * 按顺序传给 ffmpeg 的输入（先是各片段，再是各贴图）。
+   * 图片输入没有时间长度，必须带 `-loop 1 -t 时长` 循环成视频流，
+   * 否则整段只有 1 帧：主轨图片片段会音画错位，贴图的 alpha 淡入淡出会整段透明。
+   */
+  inputs: Array<{ path: string; imageDurationSec?: number; imageFramerate?: number }>;
   /** `-map` 参数，已经拼成 key/value 成对的形式。 */
   maps: string[];
   outputArgs: string[];
@@ -218,10 +222,14 @@ export function compileEdl(edl: Edl, settings: ExportSettings): CompiledEdl {
   const height = evenDimension(settings.height);
   const color = padColor(edl.backgroundColor);
   const lines: string[] = [];
-  const inputs: string[] = [];
+  const inputs: CompiledEdl['inputs'] = [];
 
   edl.clips.forEach((clip, index) => {
-    inputs.push(clip.path);
+    inputs.push({
+      path: clip.path,
+      imageDurationSec: clip.kind === 'image' ? Math.max(0.1, (clip.outPoint - clip.inPoint) / (clip.speed || 1)) : undefined,
+      imageFramerate: clip.kind === 'image' ? settings.fps : undefined,
+    });
     const steps = [
       `trim=start=${seconds(clip.inPoint)}:end=${seconds(clip.outPoint)}`,
       'setpts=PTS-STARTPTS',
@@ -243,7 +251,14 @@ export function compileEdl(edl: Edl, settings: ExportSettings): CompiledEdl {
   let overlayInputIndex = edl.clips.length;
   for (const clip of edl.clips) {
     for (const overlay of clip.overlays ?? []) {
-      inputs.push(overlay.path);
+      // 贴图图片循环到窗口结束 + 淡出收尾，再留半秒余量；但不能超过成片总长，
+      // 否则 overlay 滤镜跟随最长输入，成片尾部会多出一段冻结帧（实测多 0.5 秒）
+      const totalOutput = totalTimelineDuration(edl);
+      inputs.push({
+        path: overlay.path,
+        imageDurationSec: Math.min(Math.max(0.1, overlay.endSec + overlay.fadeOutSec + 0.5), Math.max(0.1, totalOutput)),
+        imageFramerate: settings.fps,
+      });
       const overlayWidth = Math.max(2, Math.round(overlay.widthRatio * width));
       const steps = [`scale=${overlayWidth}:-2`, 'format=rgba'];
       if (overlay.fadeInSec > 0) steps.push(`fade=in:st=${seconds(overlay.startSec)}:d=${seconds(overlay.fadeInSec)}:alpha=1`);

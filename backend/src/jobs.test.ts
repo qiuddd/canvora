@@ -485,6 +485,21 @@ test('导出命令行只传 -filter_complex_script，绝不把滤镜拼进命令
   }
 });
 
+test('导出命令行：图片输入带 -loop 1 -framerate -t，视频输入原样', () => {
+  const compiled = compileEdl(
+    { fps: 30, width: 1280, height: 720, backgroundColor: '#000000', clips: [
+      { path: 'C:/x/pic.png', kind: 'image', inPoint: 0, outPoint: 5, startAt: 0, speed: 1, hasAudio: false, audioMode: 'keep' },
+      { path: 'C:/x/b.mp4', inPoint: 0, outPoint: 4, startAt: 5, speed: 1, hasAudio: true, audioMode: 'keep' },
+    ] },
+    { fileName: '成片.mp4', crf: 18, preset: 'medium', encoder: 'libx264', width: 1280, height: 720, fps: 30 },
+  );
+  const args = buildExportTimelineArgs(compiled, 'C:\\临时\\export.txt', 'C:\\临时\\out.mp4');
+  const imageInputAt = args.indexOf('C:/x/pic.png');
+  assert.deepEqual(args.slice(imageInputAt - 7, imageInputAt + 1), ['-loop', '1', '-framerate', '30', '-t', '5.000000', '-i', 'C:/x/pic.png']);
+  const videoInputAt = args.indexOf('C:/x/b.mp4');
+  assert.deepEqual(args.slice(videoInputAt - 1, videoInputAt + 1), ['-i', 'C:/x/b.mp4']);
+});
+
 test('sanitizeExportFileName 清掉 Windows 非法字符并保证是 mp4', () => {
   assert.equal(sanitizeExportFileName('我的成片.mp4'), '我的成片.mp4');
   assert.equal(sanitizeExportFileName('我的成片'), '我的成片.mp4');

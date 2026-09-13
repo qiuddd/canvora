@@ -34,3 +34,33 @@ export async function createThumbnail(inputPath: string, outputPath: string, atS
 export async function extractFrame(inputPath: string, outputPath: string, atSeconds: number, ffmpeg = 'ffmpeg'): Promise<ProcessResult> {
   return runProcess(ffmpeg, buildExtractFrameArgs(inputPath, outputPath, atSeconds));
 }
+
+/** HTTP Range 解析结果：full = 无 Range 头，整文件 200；range = 分段 206；invalid = 头不合法或越界，416。 */
+export type ParsedRange =
+  | { kind: 'full' }
+  | { kind: 'range'; start: number; end: number }
+  | { kind: 'invalid' };
+
+/**
+ * 解析 `Range: bytes=...` 请求头（预览器拖进度条必须依赖 206 分段传输，否则视频流不可 seek）。
+ * 支持 `bytes=start-end`、`bytes=start-`、`bytes=-suffix` 三种形式；end 越界按规范截到文件尾。
+ */
+export function parseRangeHeader(header: string | undefined, fileSize: number): ParsedRange {
+  if (fileSize <= 0) return { kind: 'invalid' };
+  if (!header) return { kind: 'full' };
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
+  if (!match) return { kind: 'invalid' };
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === '' && rawEnd === '') return { kind: 'full' };
+  if (rawStart === '') {
+    // bytes=-N：最后 N 个字节
+    const suffix = Number(rawEnd);
+    if (!Number.isInteger(suffix) || suffix <= 0) return { kind: 'invalid' };
+    return { kind: 'range', start: Math.max(0, fileSize - suffix), end: fileSize - 1 };
+  }
+  const start = Number(rawStart);
+  if (!Number.isInteger(start) || start >= fileSize) return { kind: 'invalid' };
+  const end = rawEnd === '' ? fileSize - 1 : Math.min(Number(rawEnd), fileSize - 1);
+  if (!Number.isInteger(end) || end < start) return { kind: 'invalid' };
+  return { kind: 'range', start, end };
+}

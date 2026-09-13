@@ -1,5 +1,5 @@
 import Fastify, { type FastifyReply } from 'fastify';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import cors from '@fastify/cors';
@@ -9,7 +9,7 @@ import {
   assetAbsolutePath, assetById, assignAssetsToGroup, createGroup, createProject, deleteProject,
   deleteAsset, ensureWorkspace, importAsset, importAssetFromUpload, readCanvas, removeFileIfExists, removeGroup, renameProject, updateAssetMetadata, writeCanvas,
 } from './workspace.js';
-import { createProxy, createThumbnail, extractFrame, probeMedia } from './media/media.js';
+import { createProxy, createThumbnail, extractFrame, parseRangeHeader, probeMedia } from './media/media.js';
 import { publicError } from './errors.js';
 import { createProvider, getProvider, listProviders, removeProvider, testProvider, updateProvider, listProviderPresets, presetById, type ProviderInput } from './providers.js';
 import { cancelGeneration, execute } from './generation.js';
@@ -20,7 +20,7 @@ import { cancelJob, deleteJob, enqueueJob, getJob, listJobs, restoreJobs, toolSt
 import { renderStatusPage } from './status-page.js';
 
 const DEFAULT_ROOT = process.env.CANVORA_WORKSPACE ?? 'F:/Canvora';
-const snapshotVersion = '0.0.2';
+const snapshotVersion = '0.0.3';
 const STARTED_AT = Date.now();
 const rootOf = (request: { query?: unknown; body?: unknown }): string => { const source = (request.query ?? request.body ?? {}) as { root?: string }; return source.root ?? DEFAULT_ROOT; };
 
@@ -120,7 +120,26 @@ export const buildServer = () => {
     const state = await ensureWorkspace(rootOf(request));
     const asset = assetById(state, request.params.id);
     if (!asset) return reply.status(404).send({ message: '素材不存在或已被删除' });
-    return reply.type(mimeFor(asset.ext, asset.kind)).send(createReadStream(assetAbsolutePath(state, asset)));
+    const filePath = assetAbsolutePath(state, asset);
+    // 必须支持 HTTP Range（206 分段）：没有它浏览器会把视频当不可 seek 的流，
+    // 时间轴预览拖进度条永远停在开头（实测 seekable 只有 [[0,0]]）
+    const fileSize = statSync(filePath).size;
+    const range = parseRangeHeader(request.headers.range, fileSize);
+    if (range.kind === 'invalid') {
+      return reply.status(416).headers({ 'content-range': `bytes */${fileSize}` }).send({ message: '请求的文件范围无效' });
+    }
+    const baseHeaders = {
+      'accept-ranges': 'bytes',
+      'cache-control': 'no-cache',
+    } as Record<string, string>;
+    if (range.kind === 'range') {
+      return reply.status(206).headers({
+        ...baseHeaders,
+        'content-range': `bytes ${range.start}-${range.end}/${fileSize}`,
+        'content-length': String(range.end - range.start + 1),
+      }).type(mimeFor(asset.ext, asset.kind)).send(createReadStream(filePath, { start: range.start, end: range.end }));
+    }
+    return reply.headers({ ...baseHeaders, 'content-length': String(fileSize) }).type(mimeFor(asset.ext, asset.kind)).send(createReadStream(filePath));
   });
 
   app.get<{ Params: { id: string } }>('/api/assets/:id/thumb', async (request, reply) => {

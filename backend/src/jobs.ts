@@ -259,6 +259,7 @@ export function readExportTimelineOptions(options: Record<string, unknown> | und
     if (typeof clip.path !== 'string' || !clip.path.trim()) throw new JobError(`第 ${index + 1} 个片段没有对应的素材文件，请重新导入素材`);
     return {
       path: clip.path,
+      kind: clip.kind === 'image' ? 'image' : clip.kind === 'video' ? 'video' : undefined,
       inPoint: readNumber(clip.inPoint, Number.NaN),
       outPoint: readNumber(clip.outPoint, Number.NaN),
       startAt: readNumber(clip.startAt, 0),
@@ -1007,11 +1008,14 @@ async function runSplitImages(ctx: JobContext, state: WorkspaceState, assets: As
 // ── 时间轴导出 ────────────────────────────────────────
 
 /** 导出用的一次 ffmpeg 调用：滤镜图写进临时文件，用 -filter_complex_script 传（AGENTS.md 4.6）。 */
-export function buildExportTimelineArgs(compiled: { inputs: string[]; maps: string[]; outputArgs: string[] }, graphFile: string, outputPath: string): string[] {
+export function buildExportTimelineArgs(compiled: { inputs: Array<{ path: string; imageDurationSec?: number; imageFramerate?: number }>; maps: string[]; outputArgs: string[] }, graphFile: string, outputPath: string): string[] {
   return [
     '-y',
     '-progress', 'pipe:1',
-    ...compiled.inputs.flatMap((path) => ['-i', path]),
+    // 图片输入必须循环成视频流：不带 -loop 1 时整段只有 1 帧，音画对不齐、贴图淡入淡出全透明
+    ...compiled.inputs.flatMap((input) => input.imageDurationSec !== undefined
+      ? ['-loop', '1', '-framerate', String(input.imageFramerate ?? 30), '-t', input.imageDurationSec.toFixed(6), '-i', input.path]
+      : ['-i', input.path]),
     '-filter_complex_script', graphFile,
     ...compiled.maps,
     ...compiled.outputArgs,
@@ -1037,7 +1041,7 @@ async function runExportTimeline(ctx: JobContext): Promise<string[]> {
   }
 
   // 一次把缺失的素材列全，别让用户导到一半才失败（TASKS 7.2.5）
-  const missing = compiled.inputs.filter((path) => !path || !existsSync(path));
+  const missing = compiled.inputs.filter((input) => !input.path || !existsSync(input.path)).map((input) => input.path);
   if (missing.length > 0) {
     throw new JobError(`有 ${missing.length} 个素材文件找不到了，导出已中止，请把缺失的素材重新导入后再试`, missing.join('\n'));
   }
